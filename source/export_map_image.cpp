@@ -9,7 +9,7 @@
 #include "map_display.h"
 
 void ExportRenderedMapImage(Map* map, int z, const std::string& outputPath, wxAuiNotebookEvent& event) {
-    wxLogMessage("Iniciando exportação da imagem do mapa...");
+    wxLogMessage("Iniciando exportação da imagem do mapa em uma posição específica...");
 
     // Obter o editor atual a partir do evento
     EditorTab* editor_tab = g_gui.tabbook->GetTab(event.GetInt());
@@ -67,53 +67,40 @@ void ExportRenderedMapImage(Map* map, int z, const std::string& outputPath, wxAu
     wxImage finalImage(width, height);
     unsigned char* finalBuffer = finalImage.GetData();
 
+    // Usar o diretório de saída como base para os arquivos
+    wxFileName outputDir(wxString::FromUTF8(outputPath));
+    wxString outputFolder = outputDir.GetPath();
+    wxLogMessage("Usando diretório de saída: %s", outputFolder);
+
     try {
-        for (int blockY = 0; blockY < blocksY; ++blockY) {
-            for (int blockX = 0; blockX < blocksX; ++blockX) {
-                wxLogMessage("Renderizando bloco [%d, %d]...", blockX, blockY);
+        // Definir a posição específica para capturar a imagem
+        const int targetX = 990;
+        const int targetY = 1031;
+        const int targetZ = 7;
 
-                int blockWidth = std::min(sqmBlockSize, widthInTiles - blockX * sqmBlockSize) * tileSize;
-                int blockHeight = std::min(sqmBlockSize, heightInTiles - blockY * sqmBlockSize) * tileSize;
+        wxLogMessage("Capturando screenshot da posição [%d, %d, %d]...", targetX, targetY, targetZ);
 
-                // Criar um buffer para capturar a renderização do bloco
-                std::unique_ptr<unsigned char[]> buffer(new unsigned char[blockWidth * blockHeight * 3]);
+        // Centralizar a câmera na posição especificada
+        Position targetPosition(targetX, targetY, targetZ);
+        map_window->SetScreenCenterPosition(targetPosition);
 
-                // Configurar o MapDrawer
-                MapDrawer drawer(canvas);
-                DrawingOptions& options = drawer.getOptions();
-                options.SetIngame();
+        // Caminho para o arquivo da imagem
+        wxString imagePath = wxFileName(outputFolder, "screenshot_990_1031_7.png").GetFullPath();
 
-                // Ajustar a viewport para renderizar apenas o bloco atual
-                glViewport(0, 0, blockWidth, blockHeight);
-                map_window->Scroll(blockX * sqmBlockSize * tileSize, blockY * sqmBlockSize * tileSize, false);
+        // Capturar a screenshot
+        canvas->TakeScreenshot(imagePath, "PNG");
 
-                // Renderizar o bloco do mapa
-                drawer.SetupVars();
-                drawer.SetupGL();
-                drawer.Draw();
-                glReadPixels(0, 0, blockWidth, blockHeight, GL_RGB, GL_UNSIGNED_BYTE, buffer.get());
-                drawer.Release();
-
-                // Copiar o bloco renderizado para a imagem final
-                for (int y = 0; y < blockHeight; ++y) {
-                    memcpy(
-                        finalBuffer + ((blockY * sqmBlockSize * tileSize + y) * width + blockX * sqmBlockSize * tileSize) * 3,
-                        buffer.get() + y * blockWidth * 3,
-                        blockWidth * 3
-                    );
-                }
-            }
+        // Verificar se o arquivo foi criado
+        if (!wxFileExists(imagePath)) {
+            wxLogError("Erro: O arquivo da imagem não foi criado: %s", imagePath);
+            return;
         }
 
-        // Salvar a imagem final como arquivo PNG
-        wxLogMessage("Salvando imagem final em: %s", outputPath);
-        if (finalImage.SaveFile(outputPath, wxBITMAP_TYPE_PNG)) {
-            wxLogMessage("Imagem exportada com sucesso: %s", outputPath);
-        } else {
-            wxLogError("Erro ao salvar a imagem: %s", outputPath);
-        }
-    } catch (const std::bad_alloc&) {
-        wxLogError("Erro: Falha na alocação de memória durante a exportação da imagem.");
+        wxLogMessage("Imagem da posição [%d, %d, %d] salva em: %s", targetX, targetY, targetZ, imagePath);
+
+        wxLogMessage("Exportação da imagem concluída.");
+    } catch (const std::exception& e) {
+        wxLogError("Erro durante a exportação: %s", e.what());
     } catch (...) {
         wxLogError("Erro desconhecido durante a exportação da imagem.");
     }
