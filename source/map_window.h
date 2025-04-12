@@ -78,6 +78,11 @@ public:
 	void CloseReplaceItemsDialog();
 	void OnReplaceItemsDialogClose(wxCloseEvent &event);
 
+	public:
+    void UpdateScrollbarsPublic(int nx, int ny) {
+        UpdateScrollbars(nx, ny);  // Chama o método protected
+    }
+
 protected:
 	// For internal use, call to resize the scrollbars with
 	// the newd dimensions of *this* window

@@ -35,6 +35,8 @@
 
 #include "iominimap.h"
 
+#include "export_map_image.h"
+
 #ifdef _MSC_VER
 	#pragma warning(disable : 4018) // signed/unsigned mismatch
 #endif
@@ -529,7 +531,7 @@ EVT_CHOICE(wxID_ANY, ExportMiniMapWindow::OnExportTypeChange)
 END_EVENT_TABLE()
 
 ExportMiniMapWindow::ExportMiniMapWindow(wxWindow* parent, Editor &editor) :
-	wxDialog(parent, wxID_ANY, "Export Minimap", wxDefaultPosition, wxSize(400, 350)),
+	wxDialog(parent, wxID_ANY, "Export Minimap", wxDefaultPosition, wxSize(400, 450)),
 	editor(editor) {
 	wxSizer* sizer = newd wxBoxSizer(wxVERTICAL);
 	wxSizer* tmpsizer;
@@ -859,6 +861,140 @@ void ExportTilesetsWindow::OnClickCancel(wxCommandEvent &WXUNUSED(event)) {
 }
 
 void ExportTilesetsWindow::CheckValues() {
+	if (directory_text_field->IsEmpty()) {
+		error_field->SetLabel("Type or select an output folder.");
+		ok_button->Enable(false);
+		return;
+	}
+
+	if (file_name_text_field->IsEmpty()) {
+		error_field->SetLabel("Type a name for the file.");
+		ok_button->Enable(false);
+		return;
+	}
+
+	FileName directory(directory_text_field->GetValue());
+
+	if (!directory.Exists()) {
+		error_field->SetLabel("Output folder not found.");
+		ok_button->Enable(false);
+		return;
+	}
+
+	if (!directory.IsDirWritable()) {
+		error_field->SetLabel("Output folder is not writable.");
+		ok_button->Enable(false);
+		return;
+	}
+
+	error_field->SetLabel(wxEmptyString);
+	ok_button->Enable(true);
+}
+
+// ============================================================================
+// Export MapImages window
+
+BEGIN_EVENT_TABLE(ExportMapImagesWindow, wxDialog)
+	EVT_BUTTON(TILESET_FILE_BUTTON, ExportMapImagesWindow::OnClickBrowse)
+	EVT_BUTTON(wxID_OK, ExportMapImagesWindow::OnClickOK)
+	EVT_BUTTON(wxID_CANCEL, ExportMapImagesWindow::OnClickCancel)
+END_EVENT_TABLE()
+
+ExportMapImagesWindow::ExportMapImagesWindow(wxWindow* parent, Editor &editor) :
+	wxDialog(parent, wxID_ANY, "Export Map Image", wxDefaultPosition, wxSize(500, 400)),
+	editor(editor) {
+	
+	wxSizer* sizer = newd wxBoxSizer(wxVERTICAL);
+	wxSizer* tmpsizer;
+
+	// Error field
+	error_field = newd wxStaticText(this, wxID_VIEW_DETAILS, "", wxDefaultPosition, wxDefaultSize);
+	error_field->SetForegroundColour(*wxRED);
+	tmpsizer = newd wxBoxSizer(wxHORIZONTAL);
+	tmpsizer->Add(error_field, 0, wxALL, 5);
+	sizer->Add(tmpsizer, 0, wxLEFT | wxRIGHT | wxBOTTOM | wxEXPAND, 5);
+
+	// Output folder
+	directory_text_field = newd wxTextCtrl(this, wxID_ANY, "", wxDefaultPosition, wxDefaultSize);
+	directory_text_field->Bind(wxEVT_KEY_UP, &ExportMapImagesWindow::OnDirectoryChanged, this);
+	directory_text_field->SetValue(wxString(g_settings.getString(Config::TILESET_EXPORT_DIR)));
+	tmpsizer = newd wxStaticBoxSizer(wxHORIZONTAL, this, "Output Folder");
+	tmpsizer->Add(directory_text_field, 1, wxALL, 5);
+	tmpsizer->Add(newd wxButton(this, TILESET_FILE_BUTTON, "Browse"), 0, wxALL, 5);
+	sizer->Add(tmpsizer, 0, wxALL | wxEXPAND, 5);
+
+	// File name
+	file_name_text_field = newd wxTextCtrl(this, wxID_ANY, "map_render", wxDefaultPosition, wxDefaultSize);
+	file_name_text_field->Bind(wxEVT_KEY_UP, &ExportMapImagesWindow::OnFileNameChanged, this);
+	tmpsizer = newd wxStaticBoxSizer(wxHORIZONTAL, this, "File Name");
+	tmpsizer->Add(file_name_text_field, 1, wxALL, 5);
+	sizer->Add(tmpsizer, 0, wxLEFT | wxRIGHT | wxBOTTOM | wxEXPAND, 5);
+
+	// OK/Cancel buttons
+	tmpsizer = newd wxBoxSizer(wxHORIZONTAL);
+	tmpsizer->Add(ok_button = newd wxButton(this, wxID_OK, "OK"), wxSizerFlags(1).Center());
+	tmpsizer->Add(newd wxButton(this, wxID_CANCEL, "Cancel"), wxSizerFlags(1).Center());
+	sizer->Add(tmpsizer, 0, wxCENTER, 10);
+
+	SetSizer(sizer);
+	Layout();
+	Centre(wxBOTH);
+	CheckValues();
+}
+
+ExportMapImagesWindow::~ExportMapImagesWindow() = default;
+
+void ExportMapImagesWindow::OnClickBrowse(wxCommandEvent &WXUNUSED(event)) {
+	wxDirDialog dialog(NULL, "Select the output folder", "", wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST);
+	if (dialog.ShowModal() == wxID_OK) {
+		const wxString &directory = dialog.GetPath();
+		directory_text_field->ChangeValue(directory);
+	}
+	CheckValues();
+}
+
+void ExportMapImagesWindow::OnDirectoryChanged(wxKeyEvent &event) {
+	CheckValues();
+	event.Skip();
+}
+
+void ExportMapImagesWindow::OnFileNameChanged(wxKeyEvent &event) {
+	CheckValues();
+	event.Skip();
+}
+
+void ExportMapImagesWindow::OnClickOK(wxCommandEvent &WXUNUSED(event)) {
+	g_gui.CreateLoadBar("Exporting Map Image");
+
+	try {
+		std::string folder = directory_text_field->GetValue().ToStdString();
+		std::string baseName = file_name_text_field->GetValue().ToStdString();
+
+		// Atualiza config para lembrar a pasta
+		g_settings.setString(Config::TILESET_EXPORT_DIR, folder);
+
+		Map& map = editor.getMap();
+			int z = 7; // futuramente você pode parametrizar isso com wxSpinCtrl
+			std::string outputPath = folder + "/" + baseName + "_z" + std::to_string(z) + ".png";
+			 // Aqui, você precisa passar um evento válido ou um evento fictício
+			 wxAuiNotebookEvent fakeEvent(wxEVT_COMMAND_NOTEBOOK_PAGE_CHANGED, 0);  // Evento simulado
+			 ExportRenderedMapImage(&map, z, outputPath, fakeEvent);  // Passando o evento simulado
+
+		g_gui.PopupDialog("Map Export", "Exported rendered map image successfully.", wxOK);
+
+	} catch (std::exception &e) {
+		g_gui.PopupDialog("Error", std::string("Error while exporting: ") + e.what(), wxOK);
+	}
+
+	g_gui.DestroyLoadBar();
+	EndModal(1);
+}
+
+void ExportMapImagesWindow::OnClickCancel(wxCommandEvent &WXUNUSED(event)) {
+	EndModal(0);
+}
+
+void ExportMapImagesWindow::CheckValues() {
 	if (directory_text_field->IsEmpty()) {
 		error_field->SetLabel("Type or select an output folder.");
 		ok_button->Enable(false);

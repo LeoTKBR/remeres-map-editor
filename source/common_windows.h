@@ -107,6 +107,34 @@ protected:
 };
 
 /**
+ * The export map images dialog
+ * Allows selection of output folder and file name for full rendered map view.
+ */
+ class ExportMapImagesWindow : public wxDialog {
+	public:
+		ExportMapImagesWindow(wxWindow* parent, Editor &editor);
+		virtual ~ExportMapImagesWindow();
+	
+		void OnClickBrowse(wxCommandEvent &);
+		void OnDirectoryChanged(wxKeyEvent &);
+		void OnFileNameChanged(wxKeyEvent &);
+		void OnClickOK(wxCommandEvent &);
+		void OnClickCancel(wxCommandEvent &);
+	
+	protected:
+		void CheckValues();
+	
+		Editor &editor;
+	
+		wxStaticText* error_field;
+		wxTextCtrl* directory_text_field;
+		wxTextCtrl* file_name_text_field;
+		wxButton* ok_button;
+	
+		DECLARE_EVENT_TABLE();
+	};	
+
+/**
  * The export minimap dialog, select output path and what floors to export.
  */
 class ExportMiniMapWindow : public wxDialog {

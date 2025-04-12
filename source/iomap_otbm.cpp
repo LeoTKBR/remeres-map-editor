@@ -1778,7 +1778,7 @@ bool IOMapOTBM::saveSpawns(Map &map, pugi::xml_document &doc) {
 							monsterNode.append_attribute("y") = y;
 							monsterNode.append_attribute("z") = spawnPosition.z;
 							auto monsterSpawnTime = monster->getSpawnMonsterTime();
-							if (monsterSpawnTime > std::numeric_limits<uint32_t>::max() || monsterSpawnTime < std::numeric_limits<uint32_t>::min()) {
+							if (monsterSpawnTime < 0 || static_cast<uint64_t>(monsterSpawnTime) > std::numeric_limits<uint32_t>::max()) {
 								monsterSpawnTime = 60;
 							}
 

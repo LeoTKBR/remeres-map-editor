@@ -64,6 +64,8 @@ MainMenuBar::MainMenuBar(MainFrame* frame) :
 	MAKE_ACTION(IMPORT_MINIMAP, wxITEM_NORMAL, OnImportMinimap);
 	MAKE_ACTION(EXPORT_MINIMAP, wxITEM_NORMAL, OnExportMinimap);
 	MAKE_ACTION(EXPORT_TILESETS, wxITEM_NORMAL, OnExportTilesets);
+	MAKE_ACTION(EXPORT_MAP_IMAGE, wxITEM_NORMAL, OnExportMapImages);
+
 
 	MAKE_ACTION(RELOAD_DATA, wxITEM_NORMAL, OnReloadDataFiles);
 	// MAKE_ACTION(RECENT_FILES, wxITEM_NORMAL, OnRecent);
@@ -347,6 +349,7 @@ void MainMenuBar::Update() {
 	EnableItem(IMPORT_MINIMAP, false);
 	EnableItem(EXPORT_MINIMAP, is_local);
 	EnableItem(EXPORT_TILESETS, loaded);
+	EnableItem(EXPORT_MAP_IMAGE, is_local);
 
 	EnableItem(FIND_ITEM, is_host);
 	EnableItem(REPLACE_ITEMS, is_local);
@@ -864,6 +867,14 @@ void MainMenuBar::OnExportMinimap(wxCommandEvent &WXUNUSED(event)) {
 void MainMenuBar::OnExportTilesets(wxCommandEvent &WXUNUSED(event)) {
 	if (g_gui.GetCurrentEditor()) {
 		ExportTilesetsWindow dlg(frame, *g_gui.GetCurrentEditor());
+		dlg.ShowModal();
+		dlg.Destroy();
+	}
+}
+
+void MainMenuBar::OnExportMapImages(wxCommandEvent &WXUNUSED(event)) {
+	if (g_gui.GetCurrentEditor()) {
+		ExportMapImagesWindow dlg(frame, *g_gui.GetCurrentEditor());
 		dlg.ShowModal();
 		dlg.Destroy();
 	}
