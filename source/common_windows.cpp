@@ -964,30 +964,37 @@ void ExportMapImagesWindow::OnFileNameChanged(wxKeyEvent &event) {
 }
 
 void ExportMapImagesWindow::OnClickOK(wxCommandEvent &WXUNUSED(event)) {
-	g_gui.CreateLoadBar("Exporting Map Image");
+    g_gui.CreateLoadBar("Exporting Map Image");
 
-	try {
-		std::string folder = directory_text_field->GetValue().ToStdString();
-		std::string baseName = file_name_text_field->GetValue().ToStdString();
+    try {
+        std::string folder = directory_text_field->GetValue().ToStdString();
+        std::string baseName = file_name_text_field->GetValue().ToStdString();
 
-		// Atualiza config para lembrar a pasta
-		g_settings.setString(Config::TILESET_EXPORT_DIR, folder);
+        // Atualiza config para lembrar a pasta
+        g_settings.setString(Config::TILESET_EXPORT_DIR, folder);
 
-		Map& map = editor.getMap();
-			int z = 7; // futuramente você pode parametrizar isso com wxSpinCtrl
-			std::string outputPath = folder + "/" + baseName + "_z" + std::to_string(z) + ".png";
-			 // Aqui, você precisa passar um evento válido ou um evento fictício
-			 wxAuiNotebookEvent fakeEvent(wxEVT_COMMAND_NOTEBOOK_PAGE_CHANGED, 0);  // Evento simulado
-			 ExportRenderedMapImage(&map, z, outputPath, fakeEvent);  // Passando o evento simulado
+        Map& map = editor.getMap();
+        int z = 7; // Nível Z fixo, pode ser parametrizado futuramente
+        int startX = 1013, startY = 709; // Coordenadas iniciais
+        int endX = 1212, endY = 925; // Coordenadas finais
 
-		g_gui.PopupDialog("Map Export", "Exported rendered map image successfully.", wxOK);
+        // Caminho base para salvar as imagens
+        std::string outputPath = folder + "/" + baseName;
 
-	} catch (std::exception &e) {
-		g_gui.PopupDialog("Error", std::string("Error while exporting: ") + e.what(), wxOK);
-	}
+        // Evento simulado
+        wxAuiNotebookEvent fakeEvent(wxEVT_COMMAND_NOTEBOOK_PAGE_CHANGED, 0);
 
-	g_gui.DestroyLoadBar();
-	EndModal(1);
+        // Chamada para exportar a área predefinida
+        ExportRenderedMapImage(&map, z, outputPath, fakeEvent, startX, startY, endX, endY);
+
+        g_gui.PopupDialog("Map Export", "Exported rendered map images successfully.", wxOK);
+
+    } catch (std::exception &e) {
+        g_gui.PopupDialog("Error", std::string("Error while exporting: ") + e.what(), wxOK);
+    }
+
+    g_gui.DestroyLoadBar();
+    EndModal(1);
 }
 
 void ExportMapImagesWindow::OnClickCancel(wxCommandEvent &WXUNUSED(event)) {

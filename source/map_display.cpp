@@ -188,6 +188,17 @@ void MapCanvas::GetViewBox(int* view_scroll_x, int* view_scroll_y, int* screensi
 	window->GetViewStart(view_scroll_x, view_scroll_y);
 }
 
+void MapCanvas::GetViewBoxSatelite(int* view_scroll_x, int* view_scroll_y, int* screensize_x, int* screensize_y) const {
+	// Mantém o posicionamento da view atual
+	MapWindow* window = GetMapWindow();
+	window->GetViewStart(view_scroll_x, view_scroll_y);
+
+	// Força o tamanho fixo de 512x512 independentemente do tamanho da janela ou zoom
+	if (screensize_x) *screensize_x = 512;
+	if (screensize_y) *screensize_y = 512;
+}
+
+
 void MapCanvas::OnPaint(wxPaintEvent &event) {
 	SetCurrent(*g_gui.GetGLContext(this));
 
@@ -240,6 +251,7 @@ void MapCanvas::OnPaint(wxPaintEvent &event) {
 
 		if (screenshot_buffer) {
 			drawer->TakeScreenshot(screenshot_buffer);
+			drawer->TakeSateliteshot(screenshot_buffer);
 		}
 
 		drawer->Release();
@@ -284,6 +296,94 @@ void MapCanvas::TakeScreenshot(wxFileName path, wxString format) {
 		GetMapWindow()->GetViewSize(&screensize_x, &screensize_y);
 		wxImage screenshot(screensize_x, screensize_y, screenshot_buffer);
 
+		time_t t = time(nullptr);
+		struct tm current_time;
+#ifdef _WIN32
+		localtime_s(&current_time, &t);
+#else
+		localtime_r(&t, &current_time);
+#endif
+
+		wxString date;
+		date << "screenshot_";
+		date << (1900 + current_time.tm_year);
+		if (current_time.tm_mon < 9) {
+			date << "-0" << (current_time.tm_mon + 1);
+		} else {
+			date << "-" << (current_time.tm_mon + 1);
+		}
+		date << "-" << current_time.tm_mday;
+		date << "-" << current_time.tm_hour;
+		date << "-" << current_time.tm_min;
+		date << "-" << current_time.tm_sec;
+
+		ASSERT(&current_time != nullptr);
+
+		int type = 0;
+		path.SetName(date);
+		if (format == "bmp") {
+			path.SetExt(format);
+			type = wxBITMAP_TYPE_BMP;
+		} else if (format == "png") {
+			path.SetExt(format);
+			type = wxBITMAP_TYPE_PNG;
+		} else if (format == "jpg" || format == "jpeg") {
+			path.SetExt(format);
+			type = wxBITMAP_TYPE_JPEG;
+		} else if (format == "tga") {
+			path.SetExt(format);
+			type = wxBITMAP_TYPE_TGA;
+		} else {
+			g_gui.SetStatusText("Unknown screenshot format \'" + format + "\", switching to default (png)");
+			path.SetExt("png");
+			;
+			type = wxBITMAP_TYPE_PNG;
+		}
+
+		path.Mkdir(0755, wxPATH_MKDIR_FULL);
+		wxFileOutputStream of(path.GetFullPath());
+		if (of.IsOk()) {
+			if (screenshot.SaveFile(of, static_cast<wxBitmapType>(type))) {
+				g_gui.SetStatusText("Took screenshot and saved as " + path.GetFullName());
+			} else {
+				g_gui.PopupDialog("File error", "Couldn't save image file correctly.", wxOK);
+			}
+		} else {
+			g_gui.PopupDialog("File error", "Couldn't open file " + path.GetFullPath() + " for writing.", wxOK);
+		}
+	}
+
+	Refresh();
+
+	screenshot_buffer = nullptr;
+}
+
+void MapCanvas::TakeSateliteshot(wxFileName path, wxString format) {
+	int screensize_x, screensize_y;
+	GetViewBoxSatelite(&view_scroll_x, &view_scroll_y, &screensize_x, &screensize_y);
+	delete[] screenshot_buffer;
+	screenshot_buffer = newd uint8_t[3 * screensize_x * screensize_y];
+
+	// Draw the window
+	Refresh();
+	wxGLCanvas::Update(); // Forces immediate redraws the window.
+
+	// screenshot_buffer should now contain the screenbuffer
+	if (screenshot_buffer == nullptr) {
+		g_gui.PopupDialog("Capture failed", "Image capture failed. Old Video Driver?", wxOK);
+	} else {
+		// We got the shit
+		int screensize_x, screensize_y;
+		GetMapWindow()->GetViewSize(&screensize_x, &screensize_y);
+		wxImage screenshot(512, 512, screenshot_buffer);
+
+		screenshot.InitAlpha();
+		unsigned char* alpha = screenshot.GetAlpha();
+		if (alpha) {
+			for (int i = 0; i < 512 * 512; ++i) {
+				alpha[i] = 255;
+			}
+		}
 		time_t t = time(nullptr);
 		struct tm current_time;
 #ifdef _WIN32

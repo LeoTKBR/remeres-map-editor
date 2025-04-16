@@ -5,6 +5,6 @@
 
 class Map; // Declaração da classe Map, que você deve incluir no arquivo .cpp
 
-void ExportRenderedMapImage(Map* map, int z, const std::string& outputPath, wxAuiNotebookEvent& event);
+void ExportRenderedMapImage(Map* map, int z, const std::string& outputPath, wxAuiNotebookEvent& event, int startX, int startY, int endX, int endY);
 
 #endif

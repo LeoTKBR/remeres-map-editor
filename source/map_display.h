@@ -121,12 +121,14 @@ public:
 	}
 	void SetZoom(double value);
 	void GetViewBox(int* view_scroll_x, int* view_scroll_y, int* screensize_x, int* screensize_y) const;
+	void GetViewBoxSatelite(int* view_scroll_x, int* view_scroll_y, int* screensize_x, int* screensize_y) const;
 
 	MapWindow* GetMapWindow() const;
 	Position GetCursorPosition() const;
 
 	void ShowPositionIndicator(const Position &position);
 	void TakeScreenshot(wxFileName path, wxString format);
+	void TakeSateliteshot(wxFileName path, wxString format);
 
 protected:
 	void getTilesToDraw(int mouse_map_x, int mouse_map_y, int floor, PositionVector* tilestodraw, PositionVector* tilestoborder, bool fill = false);

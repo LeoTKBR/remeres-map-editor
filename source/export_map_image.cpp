@@ -8,100 +8,110 @@
 #include "map_drawer.h"
 #include "map_display.h"
 
-void ExportRenderedMapImage(Map* map, int z, const std::string& outputPath, wxAuiNotebookEvent& event) {
-    wxLogMessage("Iniciando exportação da imagem do mapa em uma posição específica...");
+void ExportRenderedMapImage(Map* map, int z, const std::string& outputPath, wxAuiNotebookEvent& event, 
+    int startX, int startY, int endX, int endY) {
+wxLogMessage("Iniciando exportação de imagens do mapa em uma área predefinida...");
 
-    // Obter o editor atual a partir do evento
-    EditorTab* editor_tab = g_gui.tabbook->GetTab(event.GetInt());
-    if (!editor_tab) {
-        wxLogError("EditorTab não encontrado.");
-        return;
-    }
-    MapTab* map_tab = dynamic_cast<MapTab*>(editor_tab);
-    if (!map_tab || !map_tab->GetMap()) {
-        wxLogError("MapTab inválido ou mapa não encontrado.");
-        return;
-    }
+EditorTab* editor_tab = g_gui.tabbook->GetTab(event.GetInt());
+if (!editor_tab) return;
+MapTab* map_tab = dynamic_cast<MapTab*>(editor_tab);
+if (!map_tab || !map_tab->GetMap()) return;
+Editor* editor = map_tab->GetEditor();
+if (!editor) return;
+MapCanvas* canvas = map_tab->GetCanvas();
+if (!canvas) return;
+MapWindow* map_window = dynamic_cast<MapWindow*>(map_tab->GetView());
+if (!map_window) return;
 
-    Editor* editor = map_tab->GetEditor();
-    if (!editor) {
-        wxLogError("Editor não encontrado.");
-        return;
-    }
+canvas->SetCurrent(*g_gui.GetGLContext(canvas));
+g_gui.SetCurrentZoom(16.69);
+const int blockWidthSQM = 584;
+const int blockHeightSQM = 304;
+const int imageWidth = 512;
+const int imageHeight = 512;
 
-    // Obter o canvas de mapa
-    MapCanvas* canvas = map_tab->GetCanvas();
-    if (!canvas) {
-        wxLogError("Canvas não encontrado.");
-        return;
-    }
+startX = std::max(0, startX);
+startY = std::max(0, startY);
+endX = std::min(map->getWidth(), endX);
+endY = std::min(map->getHeight(), endY);
 
-    // Obter a janela de mapa
-    MapWindow* map_window = dynamic_cast<MapWindow*>(map_tab->GetView());
-    if (!map_window) {
-        wxLogError("MapWindow não encontrado.");
-        return;
-    }
+int numBlocksX = ((endX - startX) + blockWidthSQM - 1) / blockWidthSQM;
+int numBlocksY = ((endY - startY) + blockHeightSQM - 1) / blockHeightSQM;
 
-    // Configurar o contexto OpenGL
-    wxLogMessage("Configurando contexto OpenGL...");
-    canvas->SetCurrent(*g_gui.GetGLContext(canvas));
+// Imagem final
+wxImage finalImage(imageWidth * numBlocksX, imageHeight * numBlocksY);
+finalImage.SetRGB(wxRect(0, 0, finalImage.GetWidth(), finalImage.GetHeight()), 0, 0, 0);
 
-    // Obter as dimensões do mapa
-    const int tileSize = 32;  // Tamanho de cada tile em pixels
-    const int sqmBlockSize = 10;  // Bloco de 10x10 SQMs
-    const int blockPixelSize = sqmBlockSize * tileSize;  // 320x320 pixels por bloco
-    const int widthInTiles = map->getWidth();
-    const int heightInTiles = map->getHeight();
-    const int width = widthInTiles * tileSize;
-    const int height = heightInTiles * tileSize;
+int blockX = 0, blockY = 0;
 
-    wxLogMessage("Dimensões do mapa: %d x %d pixels.", width, height);
+for (int y = startY; y < endY; y += blockHeightSQM, ++blockY) {
+blockX = 0;
+for (int x = startX; x < endX; x += blockWidthSQM, ++blockX) {
+int centerX = x + blockWidthSQM / 2;
+int centerY = y + blockHeightSQM / 2;
 
-    // Dividir o mapa em blocos de 10x10 SQMs
-    const int blocksX = (widthInTiles + sqmBlockSize - 1) / sqmBlockSize;
-    const int blocksY = (heightInTiles + sqmBlockSize - 1) / sqmBlockSize;
+wxLogMessage("Capturando imagem no bloco central [%d, %d, %d]...", centerX, centerY, z);
+Position blockCenter(centerX, centerY, z);
+map_window->SetScreenCenterPosition(blockCenter);
+wxTheApp->Yield(true);
+wxMilliSleep(1000);
 
-    wxLogMessage("Dividindo o mapa em %d blocos horizontais e %d blocos verticais.", blocksX, blocksY);
+wxFileName tempFile(wxString::FromUTF8(outputPath));
+wxString tempPath = tempFile.GetFullPath();
 
-    wxImage finalImage(width, height);
-    unsigned char* finalBuffer = finalImage.GetData();
+canvas->TakeSateliteshot(tempPath, "PNG");
 
-    // Usar o diretório de saída como base para os arquivos
-    wxFileName outputDir(wxString::FromUTF8(outputPath));
-    wxString outputFolder = outputDir.GetPath();
-    wxLogMessage("Usando diretório de saída: %s", outputFolder);
+wxDir dir(tempPath);
+wxString tempImageName;
+bool found = dir.GetFirst(&tempImageName, "screenshot_*.png", wxDIR_FILES);
+if (!found) {
+wxLogError("Nenhuma screenshot encontrada no bloco [%d, %d].", x, y);
+continue;
+}
 
-    try {
-        // Definir a posição específica para capturar a imagem
-        const int targetX = 990;
-        const int targetY = 1031;
-        const int targetZ = 7;
+wxImage capturedImage(wxFileName(tempPath, tempImageName).GetFullPath());
+if (!capturedImage.IsOk()) {
+wxLogError("Erro ao carregar a imagem [%s]", tempImageName);
+continue;
+}
 
-        wxLogMessage("Capturando screenshot da posição [%d, %d, %d]...", targetX, targetY, targetZ);
+// Verificar se é preta
+unsigned char* data = capturedImage.GetData();
+bool isAllBlack = true;
+for (int i = 0; i < capturedImage.GetWidth() * capturedImage.GetHeight() * 3; i += 3) {
+if (data[i] != 0 || data[i + 1] != 0 || data[i + 2] != 0) {
+isAllBlack = false;
+break;
+}
+}
 
-        // Centralizar a câmera na posição especificada
-        Position targetPosition(targetX, targetY, targetZ);
-        map_window->SetScreenCenterPosition(targetPosition);
+if (isAllBlack) {
+wxLogMessage("Imagem no bloco [%d, %d] é completamente preta. Ignorando...", x, y);
+wxRemoveFile(wxFileName(tempPath, tempImageName).GetFullPath());
+continue;
+}
 
-        // Caminho para o arquivo da imagem
-        wxString imagePath = wxFileName(outputFolder, "screenshot_990_1031_7.png").GetFullPath();
+// Copiar pixels para imagem final
+for (int py = 0; py < imageHeight; ++py) {
+for (int px = 0; px < imageWidth; ++px) {
+unsigned char r = capturedImage.GetRed(px, py);
+unsigned char g = capturedImage.GetGreen(px, py);
+unsigned char b = capturedImage.GetBlue(px, py);
+finalImage.SetRGB(blockX * imageWidth + px, blockY * imageHeight + py, r, g, b);
+}
+}
 
-        // Capturar a screenshot
-        canvas->TakeScreenshot(imagePath, "PNG");
+wxRemoveFile(wxFileName(tempPath, tempImageName).GetFullPath());
+wxMilliSleep(1000);
+}
+}
 
-        // Verificar se o arquivo foi criado
-        if (!wxFileExists(imagePath)) {
-            wxLogError("Erro: O arquivo da imagem não foi criado: %s", imagePath);
-            return;
-        }
+wxString finalPath = wxString::Format("%s/z%d.png", outputPath, z);
+if (!finalImage.SaveFile(finalPath, wxBITMAP_TYPE_PNG)) {
+wxLogError("Erro ao salvar a imagem final em: %s", finalPath);
+} else {
+wxLogMessage("Imagem final salva com sucesso: %s", finalPath);
+}
 
-        wxLogMessage("Imagem da posição [%d, %d, %d] salva em: %s", targetX, targetY, targetZ, imagePath);
-
-        wxLogMessage("Exportação da imagem concluída.");
-    } catch (const std::exception& e) {
-        wxLogError("Erro durante a exportação: %s", e.what());
-    } catch (...) {
-        wxLogError("Erro desconhecido durante a exportação da imagem.");
-    }
+wxLogMessage("Exportação de todas as imagens concluída.");
 }
