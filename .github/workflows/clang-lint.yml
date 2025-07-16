@@ -42,6 +42,9 @@ jobs:
           clangFormatVersion: 16
           inplace: true
 
+      - name: Check for changes
+        run: git status
+
       - name: Run add and commit
         if: ${{ github.ref != 'refs/heads/main' }}
         uses: EndBug/add-and-commit@v9
