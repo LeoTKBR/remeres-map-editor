@@ -89,6 +89,7 @@ MainMenuBar::MainMenuBar(MainFrame* frame) :
 	MAKE_ACTION(REMOVE_ON_SELECTION_ITEM, wxITEM_NORMAL, OnRemoveItemOnSelection);
 	MAKE_ACTION(REMOVE_ON_SELECTION_MONSTER, wxITEM_NORMAL, OnRemoveMonstersOnSelection);
 	MAKE_ACTION(COUNT_ON_SELECTION_MONSTER, wxITEM_NORMAL, OnCountMonstersOnSelection);
+	MAKE_ACTION(ON_EDIT_EDIT_MONSTER_SPAWN_TIME, wxITEM_NORMAL, OnEditMonsterSpawnTime);
 	MAKE_ACTION(SELECT_MODE_COMPENSATE, wxITEM_RADIO, OnSelectionTypeChange);
 	MAKE_ACTION(SELECT_MODE_LOWER, wxITEM_RADIO, OnSelectionTypeChange);
 	MAKE_ACTION(SELECT_MODE_CURRENT, wxITEM_RADIO, OnSelectionTypeChange);
@@ -1165,7 +1166,7 @@ void MainMenuBar::OnSearchForItemOnSelection(wxCommandEvent &WXUNUSED(event)) {
 		g_gui.DestroyLoadBar();
 
 		if (finder.limitReached()) {
-			const auto message = wxString::Format("The configured limit has been reached. Only %d results will be displayed.", finder.maxCount);
+			const auto message = wxString::Format("The configured limit has been reached. Only %lu results will be displayed.", finder.maxCount);
 			g_gui.PopupDialog("Notice", message, wxOK);
 		}
 
@@ -1208,7 +1209,7 @@ void MainMenuBar::OnRemoveItemOnSelection(wxCommandEvent &WXUNUSED(event)) {
 		const auto itemsRemoved = RemoveItemOnMap(g_gui.GetCurrentMap(), condition, true);
 		g_gui.DestroyLoadBar();
 
-		g_gui.PopupDialog("Remove Item", wxString::Format("%d items removed.", itemsRemoved), wxOK);
+		g_gui.PopupDialog("Remove Item", wxString::Format("%lld items removed.", itemsRemoved), wxOK);
 		g_gui.GetCurrentMap().doChange();
 		g_gui.RefreshView();
 	}
@@ -1225,9 +1226,44 @@ void MainMenuBar::OnRemoveMonstersOnSelection(wxCommandEvent &WXUNUSED(event)) {
 	const auto monstersRemoved = RemoveMonstersOnMap(g_gui.GetCurrentMap(), true);
 	g_gui.DestroyLoadBar();
 
-	g_gui.PopupDialog("Remove Monsters", wxString::Format("%d monsters removed.", monstersRemoved), wxOK);
+	g_gui.PopupDialog("Remove Monsters", wxString::Format("%lld monsters removed.", monstersRemoved), wxOK);
 	g_gui.GetCurrentMap().doChange();
 	g_gui.RefreshView();
+}
+
+void MainMenuBar::OnEditMonsterSpawnTime(wxCommandEvent &WXUNUSED(event)) {
+	if (!g_gui.IsEditorOpen()) {
+		return;
+	}
+
+	wxTextEntryDialog dialog(
+		frame,
+		"Enter the new spawn time (must be 1 or greater):",
+		"Spawn Time:"
+	);
+	dialog.SetValue(wxString::Format("%d", g_gui.GetSpawnMonsterTime()));
+	if (dialog.ShowModal() == wxID_OK) {
+		long spawnTime;
+		wxString inputValue = dialog.GetValue();
+		if (!inputValue.IsNumber() || !inputValue.ToLong(&spawnTime) || spawnTime < 1 || spawnTime > std::numeric_limits<int32_t>::max()) {
+			g_gui.PopupDialog("Error", "Invalid spawn time. Please enter a numeric value of 1 or greater.", wxOK);
+			return;
+		}
+
+		g_gui.GetCurrentEditor()->clearActions();
+		g_gui.CreateLoadBar("Editing monster spawn time on selection...");
+		const auto monstersUpdated = EditMonsterSpawnTime(g_gui.GetCurrentMap(), true, static_cast<int32_t>(spawnTime));
+		g_gui.DestroyLoadBar();
+
+		if (monstersUpdated == 0) {
+			g_gui.PopupDialog("Edit Monster Spawn Time", "No monsters found in the selected area.", wxOK);
+		} else {
+			g_gui.PopupDialog("Edit Monster Spawn Time", wxString::Format("%d monsters updated.", monstersUpdated), wxOK);
+		}
+
+		g_gui.GetCurrentMap().doChange();
+		g_gui.RefreshView();
+	}
 }
 
 void MainMenuBar::OnCountMonstersOnSelection(wxCommandEvent &WXUNUSED(event)) {
@@ -1242,9 +1278,9 @@ void MainMenuBar::OnCountMonstersOnSelection(wxCommandEvent &WXUNUSED(event)) {
 	int64_t totalMonsters = result.first;
 	const std::unordered_map<std::string, int64_t> &monsterCounts = result.second;
 
-	wxString message = wxString::Format("There are %d monsters in total.\n\n", totalMonsters);
+	wxString message = wxString::Format("There are %lld monsters in total.\n\n", totalMonsters);
 	for (const auto &pair : monsterCounts) {
-		message += wxString::Format("%s: %d\n", pair.first, pair.second);
+		message += wxString::Format("%s: %lld\n", pair.first, pair.second);
 	}
 
 	g_gui.PopupDialog("Count Monsters", message, wxOK);
@@ -2462,7 +2498,7 @@ void MainMenuBar::SearchDuplicatedItems(bool onSelection /* = false*/) {
 
 	const auto tilesFoundAmount = foundTiles.size();
 
-	g_gui.PopupDialog("Search completed", wxString::Format("%d tiles with duplicated items founded.", tilesFoundAmount), wxOK);
+	g_gui.PopupDialog("Search completed", wxString::Format("%zu tiles with duplicated items founded.", tilesFoundAmount), wxOK);
 
 	SearchResultWindow* result = g_gui.ShowSearchWindow();
 	result->Clear();
@@ -2535,7 +2571,7 @@ void MainMenuBar::RemoveDuplicatesItems(bool onSelection /* = false*/) {
 
 		g_gui.DestroyLoadBar();
 
-		g_gui.PopupDialog("Search completed", wxString::Format("%d duplicated items removed.", removedAmount), wxOK);
+		g_gui.PopupDialog("Search completed", wxString::Format("%lld duplicated items removed.", removedAmount), wxOK);
 
 		g_gui.GetCurrentMap().doChange();
 	}
@@ -2605,7 +2641,7 @@ void MainMenuBar::SearchWallsUponWalls(bool onSelection /* = false*/) {
 
 	const auto tilesFoundAmount = foundTiles.size();
 
-	g_gui.PopupDialog("Search completed", wxString::Format("%d items under walls and doors founded.", tilesFoundAmount), wxOK);
+	g_gui.PopupDialog("Search completed", wxString::Format("%zu items under walls and doors founded.", tilesFoundAmount), wxOK);
 
 	SearchResultWindow* result = g_gui.ShowSearchWindow();
 	result->Clear();
