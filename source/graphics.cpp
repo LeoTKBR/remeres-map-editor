@@ -29,9 +29,17 @@
 #include "sprites.h"
 #include "pngfiles.h"
 
+#include "gl_compat.h"
+
+#include "gl_renderer.h"
+
 #include <wx/rawbmp.h>
 
 #include <appearances.pb.h>
+
+#ifndef GL_CLAMP_TO_EDGE
+	#define GL_CLAMP_TO_EDGE 0x812F
+#endif
 
 GraphicManager g_graphics;
 GameSprite g_gameSprite;
@@ -179,7 +187,7 @@ GraphicManager::GraphicManager() :
 	has_frame_durations(false),
 	has_frame_groups(false),
 	loaded_textures(0),
-	lastclean(0) {
+	lastclean {} {
 	animation_timer = newd wxStopWatch();
 	animation_timer->Start();
 }
@@ -203,8 +211,9 @@ GraphicManager::~GraphicManager() {
 }
 
 GLuint GraphicManager::getFreeTextureID() {
-	static GLuint id_counter = 0x10000000;
-	return id_counter++; // This should (hopefully) never run out
+	GLuint id = 0;
+	glGenTextures(1, &id);
+	return id;
 }
 
 void GraphicManager::clear() {
@@ -230,7 +239,7 @@ void GraphicManager::clear() {
 	item_count = 0;
 	creature_count = 0;
 	loaded_textures = 0;
-	lastclean = time(nullptr);
+	lastclean = std::chrono::steady_clock::now();
 }
 
 void GraphicManager::cleanSoftwareSprites() {
@@ -854,7 +863,7 @@ bool GraphicManager::loadItemSpriteMetadata(const std::shared_ptr<ItemType> &t, 
 	has_frame_durations = t->m_animationPhases.size() > 0;
 
 	if (sType->sprite_phase_size > 0) {
-		sType->animator = newd Animator(sType->sprite_phase_size, t->start_frame, t->loop_count, t->async_animation);
+		sType->animator = newd Animator(sType->sprite_phase_size, static_cast<int>(t->start_frame), t->loop_count, t->async_animation);
 		if (has_frame_durations) {
 			int frameIndex = 0;
 			for (const auto phase : t->m_animationPhases) {
@@ -904,7 +913,7 @@ bool GraphicManager::loadOutfitSpriteMetadata(canary::protobuf::appearances::App
 	has_frame_durations = animation.sprite_phase().size() > 0;
 
 	if (sType->sprite_phase_size > 0) {
-		sType->animator = newd Animator(sType->sprite_phase_size, animation.default_start_phase(), animation.loop_count(), !animation.synchronized());
+		sType->animator = newd Animator(sType->sprite_phase_size, static_cast<int8_t>(animation.default_start_phase()), animation.loop_count(), !animation.synchronized());
 		if (has_frame_durations) {
 			int frameIndex = 0;
 			for (const auto &phase : animation.sprite_phase()) {
@@ -974,17 +983,31 @@ void GraphicManager::addSpriteToCleanup(GameSprite* spr) {
 }
 
 void GraphicManager::garbageCollection() {
-	if (g_settings.getInteger(Config::TEXTURE_MANAGEMENT)) {
-		int t = time(nullptr);
-		if (loaded_textures > g_settings.getInteger(Config::TEXTURE_CLEAN_THRESHOLD) && t - lastclean > g_settings.getInteger(Config::TEXTURE_CLEAN_PULSE)) {
-			ImageMap::iterator iit = image_space.begin();
-			while (iit != image_space.end()) {
-				iit->second->clean(t);
-				++iit;
-			}
-			lastclean = t;
+	if (!g_settings.getInteger(Config::TEXTURE_MANAGEMENT)) {
+		return;
+	}
+
+	auto now = std::chrono::steady_clock::now();
+	if (now - lastclean <= std::chrono::seconds(g_settings.getInteger(Config::TEXTURE_CLEAN_PULSE))) {
+		return;
+	}
+
+	// Sheet GC runs independently of per-sprite texture threshold
+	auto longevity = std::chrono::seconds(g_settings.getInteger(Config::TEXTURE_LONGEVITY));
+	for (const auto &sheet : g_spriteAppearances.getSheets()) {
+		if (sheet->glTextureId != 0 && now - sheet->lastaccess > longevity) {
+			sheet->releaseGLTexture();
 		}
 	}
+
+	// Per-sprite image GC only runs when threshold is exceeded
+	if (loaded_textures > g_settings.getInteger(Config::TEXTURE_CLEAN_THRESHOLD)) {
+		for (auto iit = image_space.begin(); iit != image_space.end(); ++iit) {
+			iit->second->clean(now);
+		}
+	}
+
+	lastclean = now;
 }
 
 EditorSprite::EditorSprite(wxBitmap* b16x16, wxBitmap* b32x32) {
@@ -1039,7 +1062,7 @@ uint16_t GameSprite::getDrawHeight() const {
 
 wxPoint GameSprite::getDrawOffset() {
 	if (!isDrawOffsetLoaded && !spriteList.empty()) {
-		const auto &sheet = g_spriteAppearances.getSheetBySpriteId(spriteList[0]->getHardwareID());
+		const auto &sheet = g_spriteAppearances.getSheetBySpriteId(spriteList[0]->id);
 		if (!sheet) {
 			return wxPoint(0, 0);
 		}
@@ -1054,7 +1077,7 @@ wxPoint GameSprite::getDrawOffset() {
 
 uint8_t GameSprite::getWidth() {
 	if (width <= 0) {
-		const auto &sheet = g_spriteAppearances.getSheetBySpriteId(spriteList[0]->getHardwareID(), false);
+		const auto &sheet = g_spriteAppearances.getSheetBySpriteId(spriteList[0]->id, false);
 		if (sheet) {
 			width = sheet->getSpriteSize().width;
 			height = sheet->getSpriteSize().height;
@@ -1066,7 +1089,7 @@ uint8_t GameSprite::getWidth() {
 
 uint8_t GameSprite::getHeight() {
 	if (height <= 0) {
-		const auto &sheet = g_spriteAppearances.getSheetBySpriteId(spriteList[0]->getHardwareID(), false);
+		const auto &sheet = g_spriteAppearances.getSheetBySpriteId(spriteList[0]->id, false);
 		if (sheet) {
 			width = sheet->getSpriteSize().width;
 			height = sheet->getSpriteSize().height;
@@ -1088,29 +1111,53 @@ uint8_t GameSprite::getMiniMapColor() const {
 }
 
 int GameSprite::getIndex(int width, int height, int layer, int pattern_x, int pattern_y, int pattern_z, int frame) const {
-	return ((((frame % this->sprite_phase_size) * this->pattern_z + pattern_z) * this->pattern_y + pattern_y) * this->pattern_x + pattern_x) * this->layers + layer;
+	const int phase_count = std::max<int>(1, this->sprite_phase_size);
+	return ((((frame % phase_count) * this->pattern_z + pattern_z) * this->pattern_y + pattern_y) * this->pattern_x + pattern_x) * this->layers + layer;
 }
 
 GLuint GameSprite::getHardwareID(int _layer, int _count, int _pattern_x, int _pattern_y, int _pattern_z, int _frame) {
-	uint32_t v;
-	if (_count >= 0) {
-		v = _count;
-	} else {
-		v = (((_frame)*pattern_y + _pattern_y) * pattern_x + _pattern_x) * layers + _layer;
+	if (numsprites == 0 || spriteList.empty()) {
+		return 0;
 	}
-	if (v >= numsprites) {
-		if (numsprites == 1) {
+
+	const auto spriteCount = std::min<uint32_t>(numsprites, static_cast<uint32_t>(spriteList.size()));
+	uint32_t v = _count >= 0
+		? static_cast<uint32_t>(_count)
+		: static_cast<uint32_t>(getIndex(0, 0, _layer, _pattern_x, _pattern_y, _pattern_z, _frame));
+	if (v >= spriteCount) {
+		if (spriteCount == 1) {
 			v = 0;
 		} else {
-			v %= numsprites;
+			v %= spriteCount;
 		}
 	}
 	return spriteList[v]->getHardwareID();
 }
 
-std::shared_ptr<GameSprite::OutfitImage> GameSprite::getOutfitImage(int spriteId, Direction direction, const Outfit &outfit) {
-	uint32_t spriteIndex = direction * layers;
-	if (layers > 1 && spriteIndex >= numsprites) {
+SpriteUV GameSprite::getAtlasUVs(int _layer, int _count, int _pattern_x, int _pattern_y, int _pattern_z, int _frame) {
+	if (numsprites == 0 || spriteList.empty()) {
+		return { 0, 0, 1, 1 };
+	}
+
+	const auto spriteCount = std::min<uint32_t>(numsprites, static_cast<uint32_t>(spriteList.size()));
+	uint32_t v = _count >= 0
+		? static_cast<uint32_t>(_count)
+		: static_cast<uint32_t>(getIndex(0, 0, _layer, _pattern_x, _pattern_y, _pattern_z, _frame));
+	if (v >= spriteCount) {
+		if (spriteCount == 1) {
+			v = 0;
+		} else {
+			v %= spriteCount;
+		}
+	}
+	if (const auto* img = spriteList[v]; img) {
+		return img->getAtlasUVs();
+	}
+	return { 0, 0, 1, 1 };
+}
+
+std::shared_ptr<GameSprite::OutfitImage> GameSprite::getOutfitImage(int spriteId, int spriteIndex, const Outfit &outfit) {
+	if (layers > 1 && (uint32_t)spriteIndex >= numsprites) {
 		if (numsprites == 1) {
 			spriteIndex = 0;
 		} else {
@@ -1120,9 +1167,7 @@ std::shared_ptr<GameSprite::OutfitImage> GameSprite::getOutfitImage(int spriteId
 
 	for (auto &img : instanced_templates) {
 		if (img->m_spriteId == spriteId && img->m_spriteIndex == spriteIndex) {
-			const auto &outfit = img->m_outfit;
-			uint32_t lookHash = outfit.lookHead << 24 | outfit.lookBody << 16 | outfit.lookLegs << 8 | outfit.lookFeet;
-			if (outfit.getColorHash() == lookHash) {
+			if (img->m_outfit.getColorHash() == outfit.getColorHash()) {
 				return img;
 			}
 		}
@@ -1138,7 +1183,7 @@ wxMemoryDC* GameSprite::getDC(SpriteSize spriteSize) {
 
 	if (!width && !height) {
 		// Initialize default draw offset
-		const auto &sheet = g_spriteAppearances.getSheetBySpriteId(spriteList[0]->getHardwareID(), false);
+		const auto &sheet = g_spriteAppearances.getSheetBySpriteId(spriteList[0]->id, false);
 		if (sheet) {
 			width = sheet->getSpriteSize().width;
 			height = sheet->getSpriteSize().height;
@@ -1153,7 +1198,7 @@ wxMemoryDC* GameSprite::getDC(SpriteSize spriteSize) {
 		m_wxMemoryDc[spriteSize] = new wxMemoryDC(backgroundBmp);
 		m_wxMemoryDc[spriteSize]->SelectObject(wxNullBitmap);
 
-		auto spriteId = spriteList[0]->getHardwareID();
+		auto spriteId = spriteList[0]->id;
 		wxImage wxImage = g_spriteAppearances.getWxImageBySpriteId(spriteId);
 
 		// Resize the image to rme::SpritePixels x rme::SpritePixels, if necessary
@@ -1176,7 +1221,7 @@ void GameSprite::DrawTo(wxDC* dcWindow, SpriteSize spriteSize, int start_x, int 
 			return;
 		}
 
-		const auto &sheet = g_spriteAppearances.getSheetBySpriteId(spriteList[0]->getHardwareID());
+		const auto &sheet = g_spriteAppearances.getSheetBySpriteId(spriteList[0]->id);
 		if (!sheet) {
 			return;
 		}
@@ -1195,89 +1240,43 @@ void GameSprite::DrawTo(wxDC* dcWindow, SpriteSize spriteSize, int start_x, int 
 	}
 }
 
-uint8_t* GameSprite::invertGLColors(int spriteHeight, int spriteWidth, uint8_t* rgba) {
-	uint8_t* rgba_inverted = new uint8_t[spriteWidth * spriteHeight * 4];
-	for (int i = 0; i < spriteWidth * spriteHeight; i++) {
-		rgba_inverted[i * 4 + 0] = rgba[i * 4 + 2]; // R -> B
-		rgba_inverted[i * 4 + 1] = rgba[i * 4 + 1]; // G
-		rgba_inverted[i * 4 + 2] = rgba[i * 4 + 0]; // B -> R
-		rgba_inverted[i * 4 + 3] = rgba[i * 4 + 3]; // A
-	}
-
-	return rgba_inverted;
-}
-
-GameSprite::Image::Image() :
-	isGLLoaded(false),
-	lastaccess(0) {
-	////
-}
-
 GameSprite::Image::~Image() {
 	unloadGLTexture(0);
 }
 
 void GameSprite::Image::createGLTexture(GLuint textureId) {
-	ASSERT(!isGLLoaded);
-
-	uint8_t* rgba = getRGBAData();
-	if (!rgba) {
-		return;
-	}
-
-	const auto &sheet = g_spriteAppearances.getSheetBySpriteId(textureId);
-	if (!sheet) {
-		return;
-	}
-
-	auto spriteWidth = sheet->getSpriteSize().width;
-	auto spriteHeight = sheet->getSpriteSize().height;
-	auto invertedBuffer = invertGLColors(spriteHeight, spriteWidth, rgba);
-
-	isGLLoaded = true;
-	g_gui.gfx.loaded_textures += 1;
-
-	glBindTexture(GL_TEXTURE_2D, textureId);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST); // Nearest Filtering
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST); // Nearest Filtering
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F); // GL_CLAMP_TO_EDGE
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F); // GL_CLAMP_TO_EDGE
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, spriteWidth, spriteHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, invertedBuffer);
+	// No-op: base class texture creation no longer used (subclasses override)
 }
 
 void GameSprite::Image::unloadGLTexture(GLuint textureId) {
 	isGLLoaded = false;
 	g_gui.gfx.loaded_textures -= 1;
+	GLRenderer::invalidateTexture(textureId);
 	glDeleteTextures(1, &textureId);
 }
 
 void GameSprite::Image::visit() {
-	lastaccess = time(nullptr);
+	lastaccess = std::chrono::steady_clock::now();
 }
 
-void GameSprite::Image::clean(int time) {
-	if (isGLLoaded && time - lastaccess > g_settings.getInteger(Config::TEXTURE_LONGEVITY)) {
+void GameSprite::Image::clean(std::chrono::steady_clock::time_point now) {
+	if (isGLLoaded && now - lastaccess > std::chrono::seconds(g_settings.getInteger(Config::TEXTURE_LONGEVITY))) {
 		unloadGLTexture(0);
 	}
 }
 
-GameSprite::NormalImage::NormalImage() :
-	id(0),
-	size(0),
-	m_cachedData(nullptr) {
-	////
+void GameSprite::NormalImage::clean(std::chrono::steady_clock::time_point now) {
+	// Check if the GL texture sheet is still valid
+	if (atlasTextureId != 0) {
+		auto sheet = g_spriteAppearances.getSheetBySpriteId(id, false);
+		if (!sheet || sheet->glTextureId == 0) {
+			atlasTextureId = 0;
+		}
+	}
 }
 
 GameSprite::NormalImage::~NormalImage() {
 	m_cachedData = nullptr;
-}
-
-void GameSprite::NormalImage::clean(int time) {
-	Image::clean(time);
-	// We keep dumps around for 5 seconds.
-	if (time - lastaccess > 5) {
-		m_cachedData = nullptr;
-	}
 }
 
 uint8_t* GameSprite::NormalImage::getRGBAData() {
@@ -1292,24 +1291,69 @@ uint8_t* GameSprite::NormalImage::getRGBAData() {
 }
 
 GLuint GameSprite::NormalImage::getHardwareID() {
-	if (!isGLLoaded) {
-		createGLTexture(id);
+	auto sheet = g_spriteAppearances.getSheetBySpriteId(id);
+	if (!sheet) {
+		visit();
+		return 0;
 	}
+
+	GLuint currentAtlasTextureId = sheet->getOrUploadGLTexture();
+	if (currentAtlasTextureId == 0) {
+		atlasTextureId = 0;
+		visit();
+		return 0;
+	}
+
+	if (atlasTextureId != currentAtlasTextureId) {
+		auto uvs = sheet->getSpriteUVs(id);
+		atlasU0 = uvs.u0;
+		atlasV0 = uvs.v0;
+		atlasU1 = uvs.u1;
+		atlasV1 = uvs.v1;
+		atlasTextureId = currentAtlasTextureId;
+	}
+
+	sheet->lastaccess = std::chrono::steady_clock::now();
 	visit();
-	return id;
+	return atlasTextureId;
+}
+
+uint32_t GameSprite::getSpriteID(int _layer, int _count, int _pattern_x, int _pattern_y, int /*_pattern_z*/, int _frame) {
+	uint32_t v;
+	if (_count >= 0) {
+		v = _count;
+	} else {
+		v = ((_frame * pattern_y + _pattern_y) * pattern_x + _pattern_x) * layers + _layer;
+	}
+	if (v >= numsprites) {
+		if (numsprites == 1) {
+			v = 0;
+		} else {
+			v %= numsprites;
+		}
+	}
+	return spriteList[v]->id;
 }
 
 void GameSprite::NormalImage::createGLTexture(GLuint) {
-	Image::createGLTexture(id);
+	// no-op: NormalImage agora usa atlas via getHardwareID()
 }
 
 void GameSprite::NormalImage::unloadGLTexture(GLuint) {
-	Image::unloadGLTexture(id);
+	// No-op: atlas textures are managed by SpriteSheet::releaseGLTexture
 }
 
 GameSprite::EditorImage::EditorImage(const wxArtID &bitmapId) :
 	NormalImage(),
 	bitmapId(bitmapId) { }
+
+GLuint GameSprite::EditorImage::getHardwareID() {
+	if (!isGLLoaded) {
+		createGLTexture(0);
+	}
+	visit();
+	return glTextureId;
+}
 
 void GameSprite::EditorImage::createGLTexture(GLuint textureId) {
 	ASSERT(!isGLLoaded);
@@ -1350,20 +1394,20 @@ void GameSprite::EditorImage::createGLTexture(GLuint textureId) {
 	}
 
 	isGLLoaded = true;
-	id = g_gui.gfx.getFreeTextureID();
+	glTextureId = g_gui.gfx.getFreeTextureID();
 	g_gui.gfx.loaded_textures += 1;
 
-	glBindTexture(GL_TEXTURE_2D, id);
+	glBindTexture(GL_TEXTURE_2D, glTextureId);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST); // Nearest Filtering
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST); // Nearest Filtering
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F); // GL_CLAMP_TO_EDGE
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F); // GL_CLAMP_TO_EDGE
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rme::SpritePixels, rme::SpritePixels, 0, GL_RGBA, GL_UNSIGNED_BYTE, imageData);
 	delete[] imageData;
 }
 
 void GameSprite::EditorImage::unloadGLTexture(GLuint textureId) {
-	Image::unloadGLTexture(id);
+	Image::unloadGLTexture(glTextureId);
 }
 
 // OutfitImage
@@ -1374,11 +1418,19 @@ GameSprite::OutfitImage::OutfitImage(GameSprite* initParent, int initSpriteIndex
 	m_outfit(initOutfit) { }
 
 GameSprite::OutfitImage::~OutfitImage() {
+	delete[] m_cachedOutfitData;
 	m_cachedOutfitData = nullptr;
 }
 
 void GameSprite::OutfitImage::unloadGLTexture(GLuint) {
-	Image::unloadGLTexture(m_spriteId);
+	if (m_textureId != 0) {
+		isGLLoaded = false;
+		m_isGLLoaded = false;
+		g_gui.gfx.loaded_textures -= 1;
+		GLRenderer::invalidateTexture(m_textureId);
+		glDeleteTextures(1, &m_textureId);
+		m_textureId = 0;
+	}
 }
 
 void GameSprite::OutfitImage::colorizePixel(uint8_t color, uint8_t &red, uint8_t &green, uint8_t &blue) {
@@ -1396,19 +1448,23 @@ uint8_t* GameSprite::OutfitImage::getRGBAData() {
 		return m_cachedOutfitData;
 	}
 
-	const auto &sprite = g_spriteAppearances.getSprite(m_parent->spriteList[m_spriteIndex]->getHardwareID());
+	const auto &sprite = g_spriteAppearances.getSprite(m_parent->spriteList[m_spriteIndex]->id);
 	if (!sprite) {
 		return nullptr;
 	}
 
 	const auto offBounds = m_parent->spriteList.size() <= m_spriteIndex + 1;
 	const auto templateIndex = offBounds ? m_spriteIndex : m_spriteIndex + 1;
-	const auto &spriteTemplate = g_spriteAppearances.getSprite(m_parent->spriteList[templateIndex]->getHardwareID());
+	const auto &spriteTemplate = g_spriteAppearances.getSprite(m_parent->spriteList[templateIndex]->id);
 	if (!spriteTemplate) {
 		return nullptr;
 	}
 
-	uint8_t* rgbadata = sprite->pixels.data();
+	int height = sprite->size.height;
+	int width = sprite->size.width;
+	auto totalSize = width * height * 4;
+	auto rgbadata = std::make_unique<uint8_t[]>(totalSize);
+	std::memcpy(rgbadata.get(), sprite->pixels.data(), totalSize);
 	uint8_t* template_rgbadata = spriteTemplate->pixels.data();
 
 	if (m_outfit.lookHead > (sizeof(TemplateOutfitLookupTable) / sizeof(TemplateOutfitLookupTable[0]))) {
@@ -1424,8 +1480,6 @@ uint8_t* GameSprite::OutfitImage::getRGBAData() {
 		m_outfit.lookFeet = 0;
 	}
 
-	int height = sprite->size.height;
-	int width = sprite->size.width;
 	for (int y = 0; y < height; ++y) {
 		for (int x = 0; x < width; ++x) {
 			const int index = (y * width + x) * 4;
@@ -1451,7 +1505,7 @@ uint8_t* GameSprite::OutfitImage::getRGBAData() {
 
 	spdlog::debug("outfit name: {}, pattern_x: {}, pattern_y: {}, pattern_z: {}, sprite_phase_size: {}, layers: {}, draw height: {}, drawx: {}, drawy: {}", m_outfit.name, m_parent->pattern_x, m_parent->pattern_y, m_parent->pattern_z, m_parent->sprite_phase_size, m_parent->layers, m_parent->draw_height, m_parent->getDrawOffset().x, m_parent->getDrawOffset().y);
 
-	m_cachedOutfitData = rgbadata;
+	m_cachedOutfitData = rgbadata.release();
 	return m_cachedOutfitData;
 }
 
@@ -1484,17 +1538,15 @@ void GameSprite::OutfitImage::createGLTexture(GLuint spriteId, GLuint textureId)
 
 	auto spriteWidth = sheet->getSpriteSize().width;
 	auto spriteHeight = sheet->getSpriteSize().height;
-	auto invertedBuffer = m_parent->invertGLColors(spriteHeight, spriteWidth, rgba);
-
 	m_isGLLoaded = true;
 	g_gui.gfx.loaded_textures += 1;
 
 	glBindTexture(GL_TEXTURE_2D, textureId > 0 ? textureId : spriteId);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST); // Nearest Filtering
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST); // Nearest Filtering
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F); // GL_CLAMP_TO_EDGE
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F); // GL_CLAMP_TO_EDGE
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, spriteWidth, spriteHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, invertedBuffer);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, spriteWidth, spriteHeight, 0, GL_BGRA, GL_UNSIGNED_BYTE, rgba);
 }
 
 GameSprite* GameSprite::createFromBitmap(const wxArtID &bitmapId) {
@@ -1515,6 +1567,7 @@ GameSprite* GameSprite::createFromBitmap(const wxArtID &bitmapId) {
 
 // ============================================================================
 // Animator
+// ============================================================================
 
 Animator::Animator(int frame_count, int start_frame, int loop_count, bool async) :
 	frame_count(frame_count),

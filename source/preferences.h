@@ -29,7 +29,9 @@ public:
 	void OnClickApply(wxCommandEvent &);
 	void OnClickOK(wxCommandEvent &);
 	void OnClickCancel(wxCommandEvent &);
-	void SelectNewAssetsFolder(wxCommandEvent &event);
+	void OnBrowseClientPath(wxCommandEvent &event);
+	void OnBrowseMonstersPath(wxCommandEvent &event);
+	void OnBrowseNpcsPath(wxCommandEvent &event);
 	void OnCollapsiblePane(wxCollapsiblePaneEvent &);
 	wxBookCtrl &getBookCtrl() {
 		return *book;
@@ -79,6 +81,7 @@ protected:
 	wxChoice* screenshot_format_choice;
 	wxCheckBox* hide_items_when_zoomed_chkbox;
 	wxColourPickerCtrl* cursor_color_pick;
+	wxCheckBox* show_performance_stats_chkbox;
 	wxColourPickerCtrl* cursor_alt_color_pick;
 	wxTextCtrl* palette_icons_col_size;
 	wxTextCtrl* palette_icons_row_size;
@@ -113,7 +116,9 @@ protected:
 
 	// Client info
 	wxChoice* default_version_choice;
-	wxDirPickerCtrl* version_dir_picker;
+	wxTextCtrl* version_dir_picker;
+	wxTextCtrl* monsters_lua_dir_picker;
+	wxTextCtrl* npcs_lua_dir_picker;
 	wxCheckBox* check_sigs_chkbox;
 
 	// Create controls

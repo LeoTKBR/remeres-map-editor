@@ -214,6 +214,7 @@ void Settings::IO(IOMode mode) {
 	Int(SHOW_HOUSES, 1);
 	Int(SHOW_BLOCKING, 0);
 	Int(SHOW_TOOLTIPS, 1);
+	Int(SHOW_PERFORMANCE_STATS, 0);
 	Int(SHOW_ONLY_TILEFLAGS, 0);
 	Int(SHOW_ONLY_MODIFIED_TILES, 0);
 	Int(SHOW_PREVIEW, 0);
@@ -225,6 +226,7 @@ void Settings::IO(IOMode mode) {
 	Int(VERSION_ID, 0);
 	Int(USE_CUSTOM_DATA_DIRECTORY, 0);
 	String(DATA_DIRECTORY, "");
+	Int(USE_SQLITE_MATERIALS, 1);
 	String(ASSETS_DATA_DIRS, "");
 
 	section("Editor");
@@ -342,6 +344,11 @@ void Settings::IO(IOMode mode) {
 	String(TOOLBAR_BRUSHES_LAYOUT, "");
 	String(TOOLBAR_POSITION_LAYOUT, "");
 	String(TOOLBAR_SIZES_LAYOUT, "");
+	String(TOOLBAR_INDICATORS_LAYOUT, "");
+
+	section("Creatures");
+	String(MONSTERS_LUA_DIRECTORY, "");
+	String(NPCS_LUA_DIRECTORY, "");
 
 	section("");
 	Int(GOTO_WEBSITE_ON_BOOT, 0);
@@ -399,34 +406,33 @@ void Settings::save(bool endoftheworld) {
 	IO(SAVE);
 #ifdef __WINDOWS__
 	if (use_file_cfg) {
-		wxFileConfig* conf = dynamic_cast<wxFileConfig*>(wxConfig::Get());
-		if (!conf) {
+		wxFileConfig* file_conf = dynamic_cast<wxFileConfig*>(wxConfig::Get());
+		if (!file_conf) {
 			return;
 		}
 		FileName filename("rme.cfg");
 		wxFileOutputStream file(filename.GetFullPath());
-		conf->Save(file);
+		file_conf->Save(file);
 	}
 #else
-	wxFileConfig* conf = dynamic_cast<wxFileConfig*>(wxConfig::Get());
-	if (!conf) {
+	wxFileConfig* file_conf = dynamic_cast<wxFileConfig*>(wxConfig::Get());
+	if (!file_conf) {
 		return;
 	}
 	FileName filename("./rme.cfg");
 	if (filename.FileExists()) { // Use local file if it exists
 		wxFileOutputStream file(filename.GetFullPath());
-		conf->Save(file);
+		file_conf->Save(file);
 	} else { // Else use global (user-specific) conf
 		wxString path = wxStandardPaths::Get().GetUserConfigDir() + "/.rme/rme.cfg";
 		filename.Assign(path);
 		filename.Mkdir(0755, wxPATH_MKDIR_FULL);
 		wxFileOutputStream file(filename.GetFullPath());
-		conf->Save(file);
+		file_conf->Save(file);
 	}
 #endif
 	if (endoftheworld) {
-		wxConfigBase* conf = dynamic_cast<wxConfigBase*>(wxConfig::Get());
+		auto base_conf = std::unique_ptr<wxConfigBase>(dynamic_cast<wxConfigBase*>(wxConfig::Get()));
 		wxConfig::Set(nullptr);
-		delete conf;
 	}
 }

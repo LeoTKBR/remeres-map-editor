@@ -35,10 +35,7 @@
 #include "complexitem.h"
 #include "monster.h"
 #include "npc.h"
-
-#if defined(__LINUX__) || defined(__WINDOWS__)
-	#include <GL/glut.h>
-#endif
+#include "lua/lua_script_manager.h"
 
 #include "../brushes/icon/rme_icon.xpm"
 
@@ -86,7 +83,11 @@ EVT_SET_FOCUS(MapScrollBar::OnFocus)
 EVT_MOUSEWHEEL(MapScrollBar::OnWheel)
 END_EVENT_TABLE()
 
+#ifdef RME_CMAKE_BUILD
+wxIMPLEMENT_APP_NO_MAIN(Application);
+#else
 wxIMPLEMENT_APP(Application);
+#endif
 
 Application::~Application() {
 	// Destroy
@@ -112,13 +113,6 @@ bool Application::OnInit() {
 	// Tell that we are the real thing
 	wxAppConsole::SetInstance(this);
 	wxArtProvider::Push(new ArtProvider());
-
-#if defined(__LINUX__) || defined(__WINDOWS__)
-	int argc = 1;
-	auto arg = wxString(this->argv[0]).ToStdString();
-	char* argv[] = { &arg[0] };
-	glutInit(&argc, argv);
-#endif
 
 	// Load some internal stuff
 	g_settings.load();
@@ -172,6 +166,13 @@ bool Application::OnInit() {
 
 	// Load palette
 	g_gui.LoadPerspective();
+
+	// Initialize Lua scripting system
+	if (!g_luaScripts.initialize()) {
+		spdlog::error("Failed to initialize Lua scripting: {}", g_luaScripts.getLastError());
+	} else if (g_gui.root && g_gui.root->menu_bar) {
+		g_gui.root->menu_bar->LoadScriptsMenu();
+	}
 
 	wxIcon icon(rme_icon);
 	g_gui.root->SetIcon(icon);
@@ -307,11 +308,20 @@ void Application::Unload() {
 }
 
 int Application::OnExit() {
+	g_luaScripts.shutdown();
 #ifdef _USE_PROCESS_COM
 	wxDELETE(m_proc_server);
 	wxDELETE(m_single_instance_checker);
 #endif
 	return 1;
+}
+
+void Application::ShutdownServices() {
+	g_luaScripts.shutdown();
+#ifdef _USE_PROCESS_COM
+	wxDELETE(m_proc_server);
+	wxDELETE(m_single_instance_checker);
+#endif
 }
 
 void Application::OnFatalException() {
@@ -477,18 +487,17 @@ bool MainFrame::DoQuerySaveTileset(bool doclose) {
 	if (g_gui.GetCurrentEditor()) {
 		ExportTilesetsWindow dlg(this, *g_gui.GetCurrentEditor());
 		dlg.ShowModal();
-		dlg.Destroy();
 	}
 
 	return !g_materials.needSave();
 }
 
-bool MainFrame::DoQuerySave(bool doclose) {
+bool MainFrame::DoQuerySave(bool doclose, bool checkTileset) {
 	if (!g_gui.IsEditorOpen()) {
 		return true;
 	}
 
-	if (!DoQuerySaveTileset()) {
+	if (checkTileset && !DoQuerySaveTileset()) {
 		return false;
 	}
 
@@ -556,76 +565,72 @@ void MainFrame::ShowMissingMonsters() {
 
 	if (!missingMonsters.IsEmpty()) {
 		wxString missingMonstersStr = "Missing Monsters:\n" + wxJoin(missingMonsters, '\n');
-		wxMessageDialog dialog(this, missingMonstersStr, "Missing Monsters Outfit (data/monsters.xml)", wxOK | wxICON_INFORMATION);
+		wxMessageDialog dialog(this, missingMonstersStr, "Missing Monsters", wxOK | wxICON_INFORMATION);
 		dialog.ShowModal();
 	}
 }
 
 void MainFrame::ShowMissingNpcs() {
-	wxArrayString missingMonsters = g_npcs.getMissingNpcNames();
+	wxArrayString missingNpcs = g_npcs.getMissingNpcNames();
 
-	if (!missingMonsters.IsEmpty()) {
-		wxString missingMonstersStr = "Missing Npcs:\n" + wxJoin(missingMonsters, '\n');
-		wxMessageDialog dialog(this, missingMonstersStr, "Missing Npcs Outfit (data/npcs.xml)", wxOK | wxICON_INFORMATION);
+	if (!missingNpcs.IsEmpty()) {
+		wxString missingNpcsStr = "Missing NPCs:\n" + wxJoin(missingNpcs, '\n');
+		wxMessageDialog dialog(this, missingNpcsStr, "Missing NPCs", wxOK | wxICON_INFORMATION);
 		dialog.ShowModal();
 	}
 }
 
 bool MainFrame::DoQueryImportCreatures() {
-	// Monsters
-	if (g_monsters.hasMissing()) {
-		long ret = g_gui.PopupDialog("Missing monsters", "There are missing monsters in the editor, do you want to load them from an OT monster file?", wxYES | wxNO);
-		if (ret == wxID_YES) {
-			do {
-				wxFileDialog dlg(g_gui.root, "Import monster file", "", "", "*.xml", wxFD_OPEN | wxFD_MULTIPLE | wxFD_FILE_MUST_EXIST);
-				if (dlg.ShowModal() == wxID_OK) {
-					wxArrayString paths;
-					dlg.GetPaths(paths);
-					for (uint32_t i = 0; i < paths.GetCount(); ++i) {
-						wxString error;
-						wxArrayString warnings;
-						bool ok = g_monsters.importXMLFromOT(FileName(paths[i]), error, warnings);
-						if (ok) {
-							g_gui.ListDialog("Monster loader errors", warnings);
-						} else {
-							wxMessageBox("Error OT data file \"" + paths[i] + "\".\n" + error, "Error", wxOK | wxICON_INFORMATION, g_gui.root);
-						}
-					}
-				} else {
-					break;
-				}
-			} while (g_monsters.hasMissing());
-		}
-
-		ShowMissingMonsters();
+	if (!g_monsters.hasMissing() && !g_npcs.hasMissing()) {
+		g_gui.RefreshPalettes();
+		return true;
 	}
-	// Npcs
-	if (g_npcs.hasMissing()) {
-		long ret = g_gui.PopupDialog("Missing npcs", "There are missing npcs in the editor, do you want to load them from an OT npc file?", wxYES | wxNO);
-		if (ret == wxID_YES) {
-			do {
-				wxFileDialog dlg(g_gui.root, "Import npc file", "", "", "*.xml", wxFD_OPEN | wxFD_MULTIPLE | wxFD_FILE_MUST_EXIST);
-				if (dlg.ShowModal() == wxID_OK) {
-					wxArrayString paths;
-					dlg.GetPaths(paths);
-					for (uint32_t i = 0; i < paths.GetCount(); ++i) {
-						wxString error;
-						wxArrayString warnings;
-						bool ok = g_npcs.importXMLFromOT(FileName(paths[i]), error, warnings);
-						if (ok) {
-							g_gui.ListDialog("Npc loader errors", warnings);
-						} else {
-							wxMessageBox("Error OT data file \"" + paths[i] + "\".\n" + error, "Error", wxOK | wxICON_INFORMATION, g_gui.root);
-						}
-					}
-				} else {
-					break;
-				}
-			} while (g_npcs.hasMissing());
-		}
 
-		ShowMissingNpcs();
+	std::string monstersLuaDir = g_settings.getString(Config::MONSTERS_LUA_DIRECTORY);
+	std::string npcsLuaDir = g_settings.getString(Config::NPCS_LUA_DIRECTORY);
+
+	const bool monstersLuaReady = !monstersLuaDir.empty() && wxDir::Exists(wxstr(monstersLuaDir));
+	const bool npcsLuaReady = !npcsLuaDir.empty() && wxDir::Exists(wxstr(npcsLuaDir));
+	bool needsConfig = (g_monsters.hasMissing() && !monstersLuaReady)
+		|| (g_npcs.hasMissing() && !npcsLuaReady);
+
+	if (needsConfig) {
+		long ret = g_gui.PopupDialog("Missing creatures", "There are missing creatures in the map. Would you like to configure the Lua directories to load them?", wxYES | wxNO);
+		if (ret == wxID_YES) {
+			PreferencesWindow dialog(g_gui.root);
+			dialog.getBookCtrl().SetSelection(4);
+			dialog.ShowModal();
+
+			monstersLuaDir = g_settings.getString(Config::MONSTERS_LUA_DIRECTORY);
+			npcsLuaDir = g_settings.getString(Config::NPCS_LUA_DIRECTORY);
+		}
 	}
+
+	if (g_monsters.hasMissing() && !monstersLuaDir.empty()) {
+		wxString luaErr;
+		wxArrayString luaWarn;
+		if (!g_monsters.loadFromLuaDir(wxString(monstersLuaDir), luaErr, luaWarn)) {
+			wxLogWarning("%s", luaErr);
+		}
+		for (const auto &warn : luaWarn) {
+			wxLogWarning("%s", warn);
+		}
+	}
+
+	if (g_npcs.hasMissing() && !npcsLuaDir.empty()) {
+		wxString luaErr;
+		wxArrayString luaWarn;
+		if (!g_npcs.loadFromLuaDir(wxString(npcsLuaDir), luaErr, luaWarn)) {
+			wxLogWarning("%s", luaErr);
+		}
+		for (const auto &warn : luaWarn) {
+			wxLogWarning("%s", warn);
+		}
+	}
+
+	ShowMissingMonsters();
+	ShowMissingNpcs();
+
 	g_gui.RefreshPalettes();
 	return true;
 }
@@ -643,26 +648,38 @@ bool MainFrame::LoadMap(FileName name) {
 }
 
 void MainFrame::OnExit(wxCloseEvent &event) {
-	// clicking 'x' button
+	if (!DoQuerySaveTileset()) {
+		if (event.CanVeto()) {
+			event.Veto();
+			return;
+		}
+	}
 
-	// do you want to save map changes?
-	while (g_gui.IsEditorOpen()) {
-		if (!DoQuerySave()) {
+	std::set<Map*> prompted;
+	for (int i = 0; i < g_gui.tabbook->GetTabCount(); ++i) {
+		auto* mapTab = dynamic_cast<MapTab*>(g_gui.tabbook->GetTab(i));
+		if (!mapTab || !mapTab->GetMap() || !mapTab->GetMap()->hasChanged()
+			|| prompted.contains(mapTab->GetMap())) {
+			continue;
+		}
+		prompted.insert(mapTab->GetMap());
+		g_gui.tabbook->SetFocusedTab(i);
+		if (!DoQuerySave(false, false)) {
 			if (event.CanVeto()) {
 				event.Veto();
 				return;
-			} else {
-				break;
 			}
+			break;
 		}
 	}
-	g_gui.aui_manager->UnInit();
-	((Application &)wxGetApp()).Unload();
-#ifdef __RELEASE__
-	// Hack, "crash" gracefully in release builds, let OS handle cleanup of windows
+
+	g_gui.SaveHotkeys();
+	g_gui.SavePerspective();
+	g_gui.root->SaveRecentFiles();
+	ClientAssets::save();
+	g_settings.save(true);
+	wxGetApp().ShutdownServices();
 	exit(0);
-#endif
-	Destroy();
 }
 
 void MainFrame::AddRecentFile(const FileName &file) {
@@ -688,14 +705,10 @@ void MainFrame::PrepareDC(wxDC &dc) {
 	dc.SetMapMode(wxMM_TEXT);
 }
 
-#ifdef _MSC_VER
-// This is necessary for cmake with visual studio link the executable
+#ifdef RME_CMAKE_BUILD
+// CMake builds use the console subsystem, so provide main without letting
+// wxIMPLEMENT_APP generate a second wx entrypoint.
 int main(int argc, char** argv) {
-	wxEntryStart(argc, argv); // Start the wxWidgets library
-	Application* app = new Application(); // Create the application object
-	wxApp::SetInstance(app); // Informs wxWidgets that app is the application object
-	wxEntry(); // Call the wxEntry() function to start the application execution
-	wxEntryCleanup(); // Clear the wxWidgets library
-	return 0;
+	return wxEntry(argc, argv);
 }
 #endif

@@ -16,6 +16,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "main.h"
+#include <array>
 
 #include "gui.h"
 #include "editor.h"
@@ -32,6 +33,8 @@
 #include "application.h"
 #include "live_server.h"
 #include "browse_tile_window.h"
+
+#include "main_menubar.h"
 
 #include "doodad_brush.h"
 #include "house_exit_brush.h"
@@ -105,7 +108,7 @@ END_EVENT_TABLE()
 bool MapCanvas::processed[] = { 0 };
 
 MapCanvas::MapCanvas(MapWindow* parent, Editor &editor, int* attriblist) :
-	wxGLCanvas(parent, wxID_ANY, nullptr, wxDefaultPosition, wxDefaultSize, wxWANTS_CHARS),
+	wxGLCanvas(parent, wxID_ANY, attriblist, wxDefaultPosition, wxDefaultSize, wxWANTS_CHARS),
 	editor(editor),
 	floor(rme::MapGroundLayer),
 	zoom(1.0),
@@ -152,6 +155,13 @@ MapCanvas::~MapCanvas() {
 }
 
 void MapCanvas::Refresh() {
+	QueueRefresh(true);
+}
+
+void MapCanvas::QueueRefresh(bool mark_scene_dirty) {
+	if (mark_scene_dirty) {
+		drawer->markDirty();
+	}
 	if (refresh_watch.Time() > g_settings.getInteger(Config::HARD_REFRESH_RATE)) {
 		refresh_watch.Start();
 		wxGLCanvas::Update();
@@ -188,6 +198,9 @@ void MapCanvas::GetViewBox(int* view_scroll_x, int* view_scroll_y, int* screensi
 }
 
 void MapCanvas::OnPaint(wxPaintEvent &event) {
+	if (!IsShownOnScreen()) {
+		return;
+	}
 	SetCurrent(*g_gui.GetGLContext(this));
 
 	if (g_gui.IsRenderingEnabled()) {
@@ -214,6 +227,7 @@ void MapCanvas::OnPaint(wxPaintEvent &event) {
 			options.highlight_items = g_settings.getBoolean(Config::HIGHLIGHT_ITEMS);
 			options.show_blocking = g_settings.getBoolean(Config::SHOW_BLOCKING);
 			options.show_tooltips = g_settings.getBoolean(Config::SHOW_TOOLTIPS);
+			options.show_performance_stats = g_settings.getBoolean(Config::SHOW_PERFORMANCE_STATS);
 			options.show_as_minimap = g_settings.getBoolean(Config::SHOW_AS_MINIMAP);
 			options.show_only_colors = g_settings.getBoolean(Config::SHOW_ONLY_TILEFLAGS);
 			options.show_only_modified = g_settings.getBoolean(Config::SHOW_ONLY_MODIFIED_TILES);
@@ -227,8 +241,14 @@ void MapCanvas::OnPaint(wxPaintEvent &event) {
 
 		options.dragging = boundbox_selection;
 
-		if (options.show_preview || drawer->GetPositionIndicatorTime() != 0) {
-			animation_timer->Start();
+		const bool animate_position_indicator = drawer->GetPositionIndicatorTime() != 0;
+		const bool animate_preview = options.show_preview && zoom <= 2.0f;
+		if (animate_position_indicator) {
+			animation_timer->StartRefresh(16, true);
+		} else if (animate_preview) {
+			animation_timer->StartRefresh(250, true);
+		} else if (options.show_performance_stats) {
+			animation_timer->StartRefresh(500, false);
 		} else {
 			animation_timer->Stop();
 		}
@@ -1677,10 +1697,15 @@ void MapCanvas::OnGainMouse(wxMouseEvent &event) {
 }
 
 void MapCanvas::OnKeyDown(wxKeyEvent &event) {
+// wxGTK does not propagate keyboard events from wxGLCanvas
+// to the frame's accelerator table, so we dispatch manually.
+#ifdef __LINUX__
+	if (DispatchMenuShortcut(event)) {
+		return;
+	}
+#endif
 	MapWindow* window = GetMapWindow();
 
-	// char keycode = event.GetKeyCode();
-	//  std::cout << "Keycode " << keycode << std::endl;
 	switch (event.GetKeyCode()) {
 		case WXK_NUMPAD_ADD:
 		case WXK_PAGEUP: {
@@ -1866,8 +1891,17 @@ void MapCanvas::OnKeyDown(wxKeyEvent &event) {
 			break;
 		}
 		case 'q':
-		case 'Q': { // Select previous brush
-			g_gui.SelectPreviousBrush();
+		case 'Q': {
+			int fullId = static_cast<int>(MAIN_FRAME_MENU) + static_cast<int>(MenuBar::SHOW_SHADE);
+			wxMenuBar* mb = g_gui.root->GetMenuBar();
+			if (mb) {
+				wxMenuItem* item = mb->FindItem(fullId);
+				if (item && item->IsCheckable()) {
+					item->Check(!item->IsChecked());
+				}
+			}
+			wxCommandEvent evt(wxEVT_COMMAND_MENU_SELECTED, fullId);
+			g_gui.root->GetEventHandler()->ProcessEvent(evt);
 			break;
 		}
 		// Hotkeys
@@ -1946,12 +1980,198 @@ void MapCanvas::OnKeyDown(wxKeyEvent &event) {
 			keyCode = WXK_CONTROL_D;
 			break;
 		}
+		case 'b':
+		case 'B': {
+			g_gui.SelectPreviousBrush();
+			break;
+		}
 		default: {
 			event.Skip();
 			break;
 		}
 	}
 }
+
+#ifdef __LINUX__
+bool MapCanvas::DispatchMenuShortcut(wxKeyEvent &event) {
+	int key = event.GetKeyCode();
+	if (key == WXK_NONE || key == 0) {
+		key = static_cast<int>(event.GetUnicodeKey());
+	}
+	bool ctrl = event.ControlDown();
+	bool shift = event.ShiftDown();
+
+	if (key >= 'a' && key <= 'z') {
+		key = key - 'a' + 'A';
+	}
+	if (key >= 1 && key <= 26) {
+		key = key + 'A' - 1;
+		ctrl = true;
+	}
+
+	int menuId = -1;
+
+	if (ctrl && shift) {
+		switch (key) {
+			case 'Z':
+				menuId = static_cast<int>(MenuBar::REDO);
+				break;
+			case 'F':
+				menuId = static_cast<int>(MenuBar::REPLACE_ITEMS);
+				break;
+		}
+	} else if (ctrl) {
+		switch (key) {
+			case 'Z':
+				menuId = static_cast<int>(MenuBar::UNDO);
+				break;
+			case 'F':
+				menuId = static_cast<int>(MenuBar::FIND_ITEM);
+				break;
+			case 'B':
+				menuId = static_cast<int>(MenuBar::BORDERIZE_SELECTION);
+				break;
+			case 'G':
+				menuId = static_cast<int>(MenuBar::GOTO_POSITION);
+				break;
+			case 'X':
+				menuId = static_cast<int>(MenuBar::CUT);
+				break;
+			case 'C':
+				menuId = static_cast<int>(MenuBar::COPY);
+				break;
+			case 'V':
+				menuId = static_cast<int>(MenuBar::PASTE);
+				break;
+			case '=':
+				menuId = static_cast<int>(MenuBar::ZOOM_IN);
+				break;
+			case '-':
+				menuId = static_cast<int>(MenuBar::ZOOM_OUT);
+				break;
+			case '0':
+				menuId = static_cast<int>(MenuBar::ZOOM_NORMAL);
+				break;
+			case 'W':
+				menuId = static_cast<int>(MenuBar::SHOW_ALL_FLOORS);
+				break;
+			case 'L':
+				menuId = static_cast<int>(MenuBar::GHOST_HIGHER_FLOORS);
+				break;
+			case 'E':
+				menuId = static_cast<int>(MenuBar::SHOW_ONLY_COLORS);
+				break;
+			case 'M':
+				menuId = static_cast<int>(MenuBar::SHOW_ONLY_MODIFIED);
+				break;
+			case 'H':
+				menuId = static_cast<int>(MenuBar::SHOW_HOUSES);
+				break;
+		}
+	} else if (shift) {
+		switch (key) {
+			case 'I':
+				menuId = static_cast<int>(MenuBar::SHOW_INGAME_BOX);
+				break;
+			case 'L':
+				menuId = static_cast<int>(MenuBar::SHOW_LIGHTS);
+				break;
+			case 'K':
+				menuId = static_cast<int>(MenuBar::SHOW_LIGHT_STRENGTH);
+				break;
+			case 'G':
+				menuId = static_cast<int>(MenuBar::SHOW_GRID);
+				break;
+			case 'E':
+				menuId = static_cast<int>(MenuBar::SHOW_AS_MINIMAP);
+				break;
+			case 'N':
+				menuId = static_cast<int>(MenuBar::SHOW_NPCS);
+				break;
+		}
+	} else {
+		switch (key) {
+			case 'A':
+				menuId = static_cast<int>(MenuBar::AUTOMAGIC);
+				break;
+			case 'P':
+				menuId = static_cast<int>(MenuBar::GOTO_PREVIOUS_POSITION);
+				break;
+			case 'J':
+				menuId = static_cast<int>(MenuBar::JUMP_TO_BRUSH);
+				break;
+			case 'V':
+				menuId = static_cast<int>(MenuBar::HIGHLIGHT_ITEMS);
+				break;
+			case 'F':
+				menuId = static_cast<int>(MenuBar::SHOW_MONSTERS);
+				break;
+			case 'S':
+				menuId = static_cast<int>(MenuBar::SHOW_SPAWNS_MONSTER);
+				break;
+			case 'U':
+				menuId = static_cast<int>(MenuBar::SHOW_SPAWNS_NPC);
+				break;
+			case 'E':
+				menuId = static_cast<int>(MenuBar::SHOW_SPECIAL);
+				break;
+			case 'O':
+				menuId = static_cast<int>(MenuBar::SHOW_PATHING);
+				break;
+			case 'Y':
+				menuId = static_cast<int>(MenuBar::SHOW_TOOLTIPS);
+				break;
+			case 'L':
+				menuId = static_cast<int>(MenuBar::SHOW_PREVIEW);
+				break;
+			case 'K':
+				menuId = static_cast<int>(MenuBar::SHOW_WALL_HOOKS);
+				break;
+			case 'M':
+				menuId = static_cast<int>(MenuBar::WIN_MINIMAP);
+				break;
+			case 'T':
+				menuId = static_cast<int>(MenuBar::SELECT_TERRAIN);
+				break;
+			case 'I':
+				menuId = static_cast<int>(MenuBar::SELECT_ITEM);
+				break;
+			case 'H':
+				menuId = static_cast<int>(MenuBar::SELECT_HOUSE);
+				break;
+			case 'C':
+				menuId = static_cast<int>(MenuBar::SELECT_MONSTER);
+				break;
+			case 'N':
+				menuId = static_cast<int>(MenuBar::SELECT_NPC);
+				break;
+			case 'W':
+				menuId = static_cast<int>(MenuBar::SELECT_WAYPOINT);
+				break;
+			case 'R':
+				menuId = static_cast<int>(MenuBar::SELECT_RAW);
+				break;
+		}
+	}
+
+	if (menuId >= 0) {
+		int fullId = static_cast<int>(MAIN_FRAME_MENU) + menuId;
+
+		wxMenuBar* mb = g_gui.root->GetMenuBar();
+		if (mb) {
+			wxMenuItem* item = mb->FindItem(fullId);
+			if (item && item->IsCheckable()) {
+				item->Check(!item->IsChecked());
+			}
+		}
+
+		wxCommandEvent evt(wxEVT_COMMAND_MENU_SELECTED, fullId);
+		g_gui.root->GetEventHandler()->ProcessEvent(evt);
+		return true;
+	}
+	return false;
+}
+#endif
 
 void MapCanvas::OnKeyUp(wxKeyEvent &event) {
 	keyCode = WXK_NONE;
@@ -2795,27 +3015,28 @@ bool MapCanvas::floodFill(Map* map, const Position &center, int x, int y, Ground
 
 AnimationTimer::AnimationTimer(MapCanvas* canvas) :
 	wxTimer(),
-	map_canvas(canvas),
-	started(false) {
-		////
-	};
-
-void AnimationTimer::Notify() {
-	if (map_canvas->GetZoom() <= 2.0) {
-		map_canvas->Refresh();
-	}
+	map_canvas(canvas) {
+	////
 }
 
-void AnimationTimer::Start() {
-	if (!started) {
+void AnimationTimer::Notify() {
+	map_canvas->QueueRefresh(mark_scene_dirty);
+}
+
+void AnimationTimer::StartRefresh(int new_interval, bool new_mark_scene_dirty) {
+	if (!started || interval != new_interval || mark_scene_dirty != new_mark_scene_dirty) {
 		started = true;
-		wxTimer::Start(100);
+		interval = new_interval;
+		mark_scene_dirty = new_mark_scene_dirty;
+		wxTimer::Start(interval);
 	}
 };
 
 void AnimationTimer::Stop() {
 	if (started) {
 		started = false;
+		mark_scene_dirty = false;
+		interval = 0;
 		wxTimer::Stop();
 	}
 };

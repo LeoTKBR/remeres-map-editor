@@ -30,6 +30,7 @@
 #include "materials.h"
 #include "doodad_brush.h"
 #include "spawn_monster_brush.h"
+#include "object_pool.h"
 
 #include "common_windows.h"
 #include "result_window.h"
@@ -40,6 +41,7 @@
 #include "welcome_dialog.h"
 #include "spawn_npc_brush.h"
 #include "actions_history_window.h"
+#include "lua/lua_scripts_window.h"
 #include "sprite_appearances.h"
 #include "preferences.h"
 
@@ -76,6 +78,7 @@ GUI::GUI() :
 	gem(nullptr),
 	search_result_window(nullptr),
 	actions_history_window(nullptr),
+	script_manager_window(nullptr),
 	secondary_map(nullptr),
 	doodad_buffer_map(nullptr),
 
@@ -112,6 +115,7 @@ GUI::GUI() :
 }
 
 GUI::~GUI() {
+	JoinAsyncSqliteBootstrapThread();
 	delete doodad_buffer_map;
 	delete g_gui.aui_manager;
 	delete OGLContext;
@@ -308,50 +312,70 @@ bool GUI::LoadDataFiles(wxString &error, wxArrayString &warnings) {
 
 	g_gui.SetLoadDone(30, "Loading items.xml ...");
 	spdlog::info("Loading items");
-	if (!g_items.loadFromGameXml(wxString("data/items/items.xml"), error, warnings)) {
+	FileName itemsPath(exec_directory);
+	itemsPath.AppendDir("data");
+	itemsPath.AppendDir("items");
+	itemsPath.SetFullName("items.xml");
+
+	if (!g_items.loadFromGameXml(itemsPath, error, warnings)) {
 		warnings.push_back("Couldn't load items.xml: " + error);
-		spdlog::warn("[GUI::LoadDataFiles] {}: {}", wxString("data/items/items.xml").ToStdString(), error.ToStdString());
+		spdlog::warn("[GUI::LoadDataFiles] {}: {}", itemsPath.GetFullPath().ToStdString(), error.ToStdString());
 	}
 
-	g_gui.SetLoadDone(45, "Loading monsters.xml ...");
-	spdlog::info("Loading monsters");
-	if (!g_monsters.loadFromXML(wxString("data/creatures/monsters.xml"), true, error, warnings)) {
-		warnings.push_back("Couldn't load monsters.xml: " + error);
-		spdlog::warn("[GUI::LoadDataFiles] {}: {}", wxString("data/creatures/monsters.xml").ToStdString(), error.ToStdString());
-	}
-
-	g_gui.SetLoadDone(45, "Loading user monsters.xml ...");
-	spdlog::info("Loading user monsters");
 	{
-		FileName cdb = ClientAssets::getLocalPath();
-		cdb.AppendDir("materials");
-		cdb.SetFullName("monsters.xml");
-		wxString nerr;
-		wxArrayString nwarn;
-		g_monsters.loadFromXML(cdb, false, nerr, nwarn);
+		std::string monstersLuaDir = g_settings.getString(Config::MONSTERS_LUA_DIRECTORY);
+		if (monstersLuaDir.empty()) {
+			warnings.push_back("Monsters Lua Directory is not configured. Set it in Edit > Preferences.");
+			spdlog::warn("[GUI::LoadDataFiles] Monsters Lua Directory is not configured.");
+		} else {
+			g_gui.SetLoadDone(47, "Loading Canary monster Lua files...");
+			wxString luaErr;
+			wxArrayString luaWarn;
+			if (!g_monsters.loadFromLuaDir(wxString(monstersLuaDir), luaErr, luaWarn)) {
+				warnings.push_back("Error loading Canary monster Lua files: " + luaErr);
+			}
+			for (const auto &w : luaWarn) {
+				warnings.push_back(w);
+			}
+		}
 	}
 
-	g_gui.SetLoadDone(45, "Loading npcs.xml ...");
-	spdlog::info("Loading npcs");
-	if (!g_npcs.loadFromXML(wxString("data/creatures/npcs.xml"), true, error, warnings)) {
-		warnings.push_back("Couldn't load npcs.xml: " + error);
-		spdlog::warn("[GUI::LoadDataFiles] {}: {}", wxString("data/creatures/npcs.xml").ToStdString(), error.ToStdString());
-	}
-
-	g_gui.SetLoadDone(45, "Loading user npcs.xml ...");
-	spdlog::info("Loading user npcs");
 	{
-		FileName cdb = ClientAssets::getLocalPath();
-		cdb.AppendDir("materials");
-		cdb.SetFullName("npcs.xml");
-		wxString nerr;
-		wxArrayString nwarn;
-		g_npcs.loadFromXML(cdb, false, nerr, warnings);
+		std::string npcsLuaDir = g_settings.getString(Config::NPCS_LUA_DIRECTORY);
+		if (npcsLuaDir.empty()) {
+			warnings.push_back("NPCs Lua Directory is not configured. Set it in Edit > Preferences.");
+			spdlog::warn("[GUI::LoadDataFiles] NPCs Lua Directory is not configured.");
+		} else {
+			g_gui.SetLoadDone(48, "Loading Canary NPC Lua files...");
+			wxString luaErr;
+			wxArrayString luaWarn;
+			if (!g_npcs.loadFromLuaDir(wxString(npcsLuaDir), luaErr, luaWarn)) {
+				warnings.push_back("Error loading Canary NPC Lua files: " + luaErr);
+			}
+			for (const auto &w : luaWarn) {
+				warnings.push_back(w);
+			}
+		}
 	}
 
 	g_gui.SetLoadDone(50, "Loading materials.xml ...");
 	spdlog::info("Loading materials");
+	g_materials.initializeBrushDatabase(warnings);
 	auto materialsPath = wxString(data_path.GetPath(wxPATH_GET_VOLUME | wxPATH_GET_SEPARATOR) + "materials/materials.xml");
+	bool startAsyncSqliteBootstrap = false;
+	if (g_settings.getBoolean(Config::USE_SQLITE_MATERIALS)) {
+		bool skipSqliteImport = false;
+		wxString sqliteImportStatus;
+		if (!g_materials.shouldSkipSqliteBootstrapImports(skipSqliteImport, sqliteImportStatus)) {
+			warnings.push_back("SQLite import bootstrap check failed: " + sqliteImportStatus);
+			spdlog::warn("[GUI::LoadDataFiles] SQLite import bootstrap check failed: {}", sqliteImportStatus.ToStdString());
+		} else if (skipSqliteImport) {
+			spdlog::info("{}", sqliteImportStatus.ToStdString());
+		} else {
+			spdlog::info("{}", sqliteImportStatus.ToStdString());
+			startAsyncSqliteBootstrap = true;
+		}
+	}
 	if (!g_materials.loadMaterials(materialsPath, error, warnings)) {
 		warnings.push_back("Couldn't load materials.xml: " + error);
 		spdlog::warn("[GUI::LoadDataFiles] {}: {}", materialsPath.ToStdString(), error.ToStdString());
@@ -366,6 +390,9 @@ bool GUI::LoadDataFiles(wxString &error, wxArrayString &warnings) {
 
 	g_gui.DestroyLoadBar();
 	spdlog::info("Assets loaded");
+	if (startAsyncSqliteBootstrap) {
+		StartAsyncSqliteBootstrapImport();
+	}
 	return true;
 }
 
@@ -386,6 +413,10 @@ void GUI::unloadMapWindow() {
 	quest_door_brush = nullptr;
 	hatch_door_brush = nullptr;
 	window_door_brush = nullptr;
+
+	// Reload/unload tears down the in-memory materials graph, so wait for the
+	// background SQLite bootstrap to stop reading shared brush/items state first.
+	JoinAsyncSqliteBootstrapThread();
 
 	g_materials.clear();
 	g_brushes.clear();
@@ -484,10 +515,14 @@ bool GUI::NewMap() {
 
 void GUI::OpenMap() {
 	wxString wildcard = MAP_LOAD_FILE_WILDCARD;
-	wxFileDialog dialog(root, "Open map file", wxEmptyString, wxEmptyString, wildcard, wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+	wxFileDialog dialog(root, "Open map file", wxEmptyString, wxEmptyString, wildcard, wxFD_OPEN | wxFD_FILE_MUST_EXIST | wxFD_MULTIPLE);
 
 	if (dialog.ShowModal() == wxID_OK) {
-		LoadMap(dialog.GetPath());
+		wxArrayString paths;
+		dialog.GetPaths(paths);
+		for (uint32_t i = 0; i < paths.GetCount(); ++i) {
+			LoadMap(FileName(paths[i]));
+		}
 	}
 }
 
@@ -525,19 +560,26 @@ void GUI::SaveMapAs() {
 }
 
 bool GUI::LoadMap(const FileName &fileName) {
+	rme::bindPooledObjectOwnerThread();
+
 	FinishWelcomeDialog();
 
 	if (GetCurrentEditor() && !GetCurrentMap().hasChanged() && !GetCurrentMap().hasFile()) {
 		g_gui.CloseCurrentEditor();
 	}
 
+	rme::resetPooledObjectStats();
+
 	Editor* editor;
 	try {
 		editor = newd Editor(copybuffer, fileName);
 	} catch (std::runtime_error &e) {
+		rme::dumpPooledObjectStats();
 		PopupDialog(root, "Error!", wxString(e.what(), wxConvUTF8), wxOK);
 		return false;
 	}
+
+	rme::dumpPooledObjectStats();
 
 	auto* mapTab = newd MapTab(tabbook, editor);
 	mapTab->OnSwitchEditorMode(mode);
@@ -887,6 +929,19 @@ void GUI::HideActionsWindow() {
 	}
 }
 
+LuaScriptsWindow* GUI::ShowScriptManagerWindow() {
+	if (!script_manager_window) {
+		script_manager_window = new LuaScriptsWindow(root);
+		LuaScriptsWindow::SetInstance(script_manager_window);
+		aui_manager->AddPane(script_manager_window, wxAuiPaneInfo().Caption("Script Manager").Right().Layer(1).CloseButton(true).MinSize(300, 200).BestSize(400, 300));
+	} else {
+		aui_manager->GetPane(script_manager_window).Show();
+	}
+	aui_manager->Update();
+	script_manager_window->RefreshScriptList();
+	return script_manager_window;
+}
+
 //=============================================================================
 // Palette Window Interface implementation
 
@@ -1072,7 +1127,9 @@ void GUI::RefreshView() {
 	}
 
 	for (EditorTab* editorTab : editorTabs) {
-		editorTab->GetWindow()->Refresh();
+		auto* mapTab = static_cast<MapTab*>(editorTab);
+		mapTab->GetCanvas()->Refresh(); // MapCanvas::Refresh() → markDirty() + wxGLCanvas::Refresh()
+		editorTab->GetWindow()->Update();
 	}
 }
 
@@ -1105,16 +1162,19 @@ bool GUI::SetLoadDone(int32_t done, const wxString &newMessage) {
 	if (done == 100) {
 		DestroyLoadBar();
 		return true;
-	} else if (done == currentProgress) {
+	}
+
+	int32_t newProgress = progressFrom + static_cast<int32_t>((done / 100.f) * (progressTo - progressFrom));
+	newProgress = std::max<int32_t>(0, std::min<int32_t>(100, newProgress));
+
+	bool messageChanged = !newMessage.empty() && newMessage != progressText;
+	if (newProgress == currentProgress && !messageChanged) {
 		return true;
 	}
 
 	if (!newMessage.empty()) {
 		progressText = newMessage;
 	}
-
-	int32_t newProgress = progressFrom + static_cast<int32_t>((done / 100.f) * (progressTo - progressFrom));
-	newProgress = std::max<int32_t>(0, std::min<int32_t>(100, newProgress));
 
 	bool skip = false;
 	if (progressBar) {
@@ -1191,6 +1251,9 @@ void GUI::OnWelcomeDialogAction(wxCommandEvent &event) {
 }
 
 void GUI::UpdateMenubar() {
+	if (root == nullptr) {
+		return;
+	}
 	root->UpdateMenubar();
 }
 
@@ -1285,7 +1348,7 @@ bool GUI::DoUndo() {
 		SetStatusText("Undo action");
 		UpdateMinimap();
 		root->UpdateMenubar();
-		root->Refresh();
+		RefreshView();
 		return true;
 	}
 	return false;
@@ -1301,7 +1364,7 @@ bool GUI::DoRedo() {
 		SetStatusText("Redo action");
 		UpdateMinimap();
 		root->UpdateMenubar();
-		root->Refresh();
+		RefreshView();
 		return true;
 	}
 	return false;
@@ -1328,7 +1391,73 @@ void GUI::ChangeFloor(int new_floor) {
 }
 
 void GUI::SetStatusText(wxString text) {
+	if (g_gui.root == nullptr) {
+		return;
+	}
 	g_gui.root->SetStatusText(text, 0);
+}
+
+bool GUI::IsAsyncSqliteBootstrapRunning() const {
+	return sqlite_bootstrap_running_.load();
+}
+
+void GUI::JoinAsyncSqliteBootstrapThread() {
+	if (!sqlite_bootstrap_thread_.joinable()) {
+		return;
+	}
+
+	sqlite_bootstrap_thread_.join();
+	sqlite_bootstrap_running_.store(false);
+}
+
+void GUI::RunAsyncSqliteBootstrapImport() {
+	wxString sqliteImportError;
+	wxArrayString sqliteWarnings;
+	const bool success = g_materials.bootstrapSqliteDatabase(sqliteImportError, sqliteWarnings);
+
+	for (const wxString &warning : sqliteWarnings) {
+		spdlog::warn("[SQLiteBootstrap] {}", warning.ToStdString());
+	}
+	if (!success && !sqliteImportError.IsEmpty()) {
+		spdlog::error("[SQLiteBootstrap] {}", sqliteImportError.ToStdString());
+	}
+
+	sqlite_bootstrap_running_.store(false);
+
+	if (wxTheApp) {
+		wxTheApp->CallAfter([this, success, sqliteImportError, sqliteWarnings]() {
+			HandleAsyncSqliteBootstrapResult(success, sqliteImportError, sqliteWarnings);
+		});
+	}
+}
+
+void GUI::HandleAsyncSqliteBootstrapResult(bool success, const wxString &sqliteImportError, const wxArrayString &sqliteWarnings) {
+	g_gui.UpdateMenubar();
+	if (success) {
+		if (sqliteWarnings.IsEmpty()) {
+			g_gui.SetStatusText("SQLite materials database built in background.");
+		} else {
+			g_gui.SetStatusText("SQLite materials database built in background with warnings.");
+		}
+		return;
+	}
+
+	g_gui.SetStatusText("SQLite materials background build failed.");
+	if (g_gui.root) {
+		g_gui.PopupDialog(g_gui.root, "SQLite Materials Import Failed", sqliteImportError, wxOK | wxICON_WARNING);
+	}
+}
+
+void GUI::StartAsyncSqliteBootstrapImport() {
+	if (sqlite_bootstrap_running_.exchange(true)) {
+		return;
+	}
+	JoinAsyncSqliteBootstrapThread();
+
+	SetStatusText("Building SQLite materials database in background...");
+	UpdateMenubar();
+
+	sqlite_bootstrap_thread_ = std::jthread(&GUI::RunAsyncSqliteBootstrapImport, this);
 }
 
 void GUI::SetTitle(wxString title) {
